@@ -17,8 +17,10 @@ type Memory struct {
 	version int
 	missing bool
 	writes  int
+	calls   int
 
-	// BeforeWrite runs before a write is applied; a non-nil error fails it.
+	// BeforeWrite runs before a write is applied, with the zero-based count of
+	// earlier Write calls; a non-nil error fails it.
 	BeforeWrite func(attempt int) error
 	// AfterWrite runs after a write is applied; a non-nil error is returned
 	// even though the write landed, like a timeout after the server committed.
@@ -73,7 +75,8 @@ func (m *Memory) Read(context.Context) (string, bool, string, error) {
 
 func (m *Memory) Write(_ context.Context, data, version string) (string, error) {
 	m.mu.Lock()
-	attempt := m.writes
+	attempt := m.calls
+	m.calls++
 	m.mu.Unlock()
 	if m.BeforeWrite != nil {
 		if err := m.BeforeWrite(attempt); err != nil {

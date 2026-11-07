@@ -60,6 +60,3 @@ func Kubernetes(cfg config.Config) bool {
 }
 
 func seconds(n int) time.Duration { return time.Duration(n) * time.Second }
-
-// Checks register themselves from this package as they are added.
-var _ = register
