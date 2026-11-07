@@ -55,7 +55,9 @@ New for the ConfigMap ledger: `TestConflictAdoptsStoredLedgerAndRewrites`
 (409), `TestTimeoutAfterCommitConvergesWithoutRewrite` (timeout then
 read-back), `TestRolledBackLedgerIsRederivedOnNextWrite` (ledger changed
 underneath), `TestCorruptUnknownMissingAndOversizedStateFailClosed` (corrupt,
-unknown version, oversized, missing), `TestLedgerOverSizeLimitIsNotWritten`, and
+unknown version, oversized, missing), `TestLedgerOverSizeLimitIsNotWritten`, the same cases through the real
+ConfigMap backend against a fake API server (`TestConfigMapBackendConvergence`,
+`TestConfigMapBackendRejectsInvalidDocuments`), and
 `TestRealBackrestwatchLedgerSurvivesImport`: a ledger written by
 backrestwatch's own `Evaluate` and evidence store re-evaluates with every entry
 unchanged (no new `NotBefore`, no lost success). Re-run that test with the real
