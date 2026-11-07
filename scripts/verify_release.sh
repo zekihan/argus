@@ -32,10 +32,12 @@ PY
 done
 HELM_REGISTRY_CONFIG="$verify_dir/registry.json" helm pull oci://ghcr.io/zekihan/charts/argus --version "$version" --destination dist/verified
 helm show chart "dist/verified/argus-$version.tgz" > "$verify_dir/chart.yaml"
+mkdir -p "$verify_dir/chart"
+tar -xzf "dist/verified/argus-$version.tgz" -C "$verify_dir/chart"
 test "$(sed -n 's/^version: //p' "$verify_dir/chart.yaml")" = "$version"
 # Helm normalizes appVersion quoting when displaying metadata.
 app_version=$(sed -n 's/^appVersion: //p' "$verify_dir/chart.yaml" | tr -d '"')
 test "$app_version" = "$version"
-helm template verify "dist/verified/argus-$version.tgz" -n argus --set accessControl.existingSecret=release-verification-only > "$verify_dir/rendered.yaml"
+helm template verify "dist/verified/argus-$version.tgz" -n argus -f "$verify_dir/chart/argus/ci/default-values.yaml" > "$verify_dir/rendered.yaml"
 test -s "$verify_dir/rendered.yaml"
 printf 'Verified both image platforms and OCI chart %s\n' "$version"

@@ -1,0 +1,136 @@
+{{- $authSecret := required "accessControl.existingSecret must name an existing API token Secret" .Values.accessControl.existingSecret -}}
+{{- $hosts := .Values.checks.hosts.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "argus.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+spec:
+  # One writer by construction: a new pod starts only after the old one stopped.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "argus.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "argus.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "argus.serviceAccount" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: argus
+          image: {{ include "argus.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "-config=/config/config.json"]
+          ports:
+            - name: api
+              containerPort: 8443
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- range $probe, $settings := dict "startupProbe" .Values.probes.startup "livenessProbe" .Values.probes.liveness "readinessProbe" .Values.probes.readiness }}
+          {{ $probe }}:
+            httpGet:
+              path: /healthz
+              port: api
+              scheme: {{ include "argus.scheme" $ }}
+            {{- toYaml $settings | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: api-auth
+              mountPath: /var/run/argus-auth
+              readOnly: true
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /var/run/argus-tls
+              readOnly: true
+            {{- end }}
+            {{- if $hosts }}
+            - name: ssh
+              mountPath: /var/run/argus-ssh
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: kubernetes-api-access
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
+        - name: config
+          configMap:
+            name: {{ include "argus.fullname" . }}-config
+        - name: api-auth
+          secret:
+            secretName: {{ $authSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.accessControl.secretKey | quote }}
+                path: token
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "argus.tlsSecret" . | quote }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}
+        {{- if $hosts }}
+        - name: ssh
+          secret:
+            secretName: {{ required "ssh.existingSecret must name the SSH key Secret when checks.hosts is enabled" .Values.ssh.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.ssh.secretKey | quote }}
+                path: ssh_private_key
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

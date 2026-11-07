@@ -1,0 +1,3 @@
+Argus serves {{ ternary "HTTPS" "HTTP" .Values.tls.enabled }} at {{ include "argus.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}.
+Every route except /healthz requires the bearer token from {{ .Values.accessControl.existingSecret }}.
+GET /v1/checks lists every route and reports apiserver and sample_fresh.

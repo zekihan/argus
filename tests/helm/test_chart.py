@@ -1,0 +1,267 @@
+import copy
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+CHART = ROOT / "charts/argus"
+HELM = os.environ.get("HELM", "helm")
+DEFAULTS = CHART / "ci/default-values.yaml"
+ALL_CHECKS = CHART / "ci/all-checks-values.yaml"
+CHECKS = ["hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd"]
+
+
+def run(*args, release="argus", namespace="argus"):
+    return subprocess.run([HELM, "template", release, str(CHART), "-n", namespace, *args], text=True, capture_output=True)
+
+
+def render(*args, release="argus", namespace="argus", values=DEFAULTS):
+    result = run("-f", str(values), *args, release=release, namespace=namespace)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return [d for d in yaml.safe_load_all(result.stdout) if d]
+
+
+def render_values(values, *args):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
+        yaml.safe_dump(values, f)
+        f.flush()
+        return render("-f", f.name, *args)
+
+
+def all_checks_values():
+    return yaml.safe_load(ALL_CHECKS.read_text())
+
+
+def kind(docs, name):
+    return [d for d in docs if d["kind"] == name]
+
+
+def config_of(docs):
+    cm = next(d for d in kind(docs, "ConfigMap") if "config.json" in d["data"])
+    return json.loads(cm["data"]["config.json"])
+
+
+def check_config(config):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
+        json.dump(config, f)
+        f.flush()
+        subprocess.run([str(ROOT / "dist/argus"), "serve", "-config", f.name, "-check-config"], check=True, capture_output=True)
+
+
+def rules(docs):
+    out = []
+    for role in kind(docs, "ClusterRole") + kind(docs, "Role"):
+        for rule in role["rules"]:
+            out.append((role["kind"], role["metadata"].get("namespace"), rule))
+    return out
+
+
+def permissions(docs):
+    """Every (kind, namespace, group, resource, verb) a render grants."""
+    return {(k, ns, rule["apiGroups"][0], resource, verb) for k, ns, rule in rules(docs) for resource in rule["resources"] for verb in rule["verbs"]}
+
+
+class ChartTests(unittest.TestCase):
+    def test_security_strategy_probes_and_image(self):
+        docs = render()
+        deployment = kind(docs, "Deployment")[0]
+        self.assertEqual(deployment["spec"]["replicas"], 1)
+        self.assertEqual(deployment["spec"]["strategy"]["type"], "Recreate")
+        pod = deployment["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        self.assertTrue(pod["securityContext"]["runAsNonRoot"])
+        self.assertEqual(pod["securityContext"]["runAsUser"], 25120)
+        self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
+        self.assertFalse(container["securityContext"]["allowPrivilegeEscalation"])
+        self.assertEqual(container["securityContext"]["capabilities"]["drop"], ["ALL"])
+        for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+            self.assertEqual(container[probe]["httpGet"], {"path": "/healthz", "port": "api", "scheme": "HTTPS"})
+        self.assertEqual(container["image"], "ghcr.io/zekihan/argus:0.1.0")
+        self.assertEqual(container["args"], ["serve", "-config=/config/config.json"])
+        service = kind(docs, "Service")[0]
+        self.assertEqual(service["spec"]["selector"], deployment["spec"]["selector"]["matchLabels"])
+        self.assertEqual(service["spec"]["ports"][0]["name"], "https")
+        digest = "sha256:" + "a" * 64
+        pod = kind(render("--set", f"image.digest={digest}"), "Deployment")[0]["spec"]["template"]["spec"]
+        self.assertTrue(pod["containers"][0]["image"].endswith("@" + digest))
+
+    def test_default_has_no_checks_and_no_permissions(self):
+        docs = render()
+        self.assertEqual(rules(docs), [])
+        self.assertFalse(kind(docs, "ClusterRoleBinding") or kind(docs, "RoleBinding"))
+        config = config_of(docs)
+        self.assertEqual(config["checks"], {})
+        self.assertEqual(config["state"], {"namespace": "argus", "name": "argus-state"})
+        self.assertEqual(config["tls"], {"certFile": "/var/run/argus-tls/tls.crt", "keyFile": "/var/run/argus-tls/tls.key"})
+        check_config(config)
+
+    def test_all_checks_config_loads_in_the_binary(self):
+        docs = render(values=ALL_CHECKS)
+        config = config_of(docs)
+        self.assertEqual(sorted(config["checks"]), sorted(CHECKS))
+        self.assertNotIn("enabled", json.dumps(config))
+        self.assertEqual(config["checks"]["hosts"]["privateKeyFile"], "/var/run/argus-ssh/ssh_private_key")
+        self.assertEqual(config["checks"]["hosts"]["knownHostsFile"], "/config/known_hosts")
+        check_config(config)
+        known_hosts = next(d for d in kind(docs, "ConfigMap") if "config.json" in d["data"])["data"]["known_hosts"]
+        self.assertIn("ssh-ed25519", known_hosts)
+
+    def test_rbac_matches_the_design(self):
+        docs = render(values=ALL_CHECKS)
+        cluster = kind(docs, "ClusterRole")[0]["rules"]
+        self.assertEqual(
+            {(r["apiGroups"][0], res) for r in cluster for res in r["resources"]},
+            {
+                ("", "nodes"), ("metrics.k8s.io", "nodes"),
+                ("postgres-operator.crunchydata.com", "postgresclusters"),
+                ("cert-manager.io", "certificates"), ("cert-manager.io", "certificaterequests"),
+                ("cert-manager.io", "issuers"), ("cert-manager.io", "clusterissuers"),
+                ("trust.cert-manager.io", "bundles"),
+                ("external-secrets.io", "externalsecrets"), ("external-secrets.io", "clusterexternalsecrets"),
+                ("external-secrets.io", "secretstores"), ("external-secrets.io", "clustersecretstores"),
+            },
+        )
+        self.assertTrue(all(r["verbs"] == ["get", "list"] for r in cluster))
+        roles = {(r["metadata"]["namespace"], r["metadata"]["name"]): r["rules"] for r in kind(docs, "Role")}
+        readers = {ns: {(rule["apiGroups"][0], res) for rule in rs for res in rule["resources"]} for (ns, name), rs in roles.items() if name.endswith("-reader")}
+        self.assertEqual(readers, {
+            "database": {("batch", "jobs"), ("batch", "cronjobs")},
+            "app": {("batch", "jobs"), ("batch", "cronjobs")},
+            "longhorn-system": {("longhorn.io", r) for r in ("volumes", "replicas", "nodes", "backuptargets", "systembackups")},
+            "argocd": {("argoproj.io", "applications")},
+        })
+        for (ns, name), rs in roles.items():
+            if name.endswith("-reader"):
+                self.assertTrue(all(rule["verbs"] == ["list"] for rule in rs))
+        state = roles[("argus", "argus-state")]
+        self.assertEqual(state, [{"apiGroups": [""], "resources": ["configmaps"], "resourceNames": ["argus-state"], "verbs": ["get", "update"]}])
+        for _, _, rule in rules(docs):
+            self.assertNotIn("secrets", rule["resources"])
+            self.assertNotIn("pods", rule["resources"])
+            self.assertNotIn("nodes/proxy", rule["resources"])
+            self.assertNotIn("*", rule["resources"] + rule["verbs"])
+        bindings = kind(docs, "RoleBinding") + kind(docs, "ClusterRoleBinding")
+        self.assertEqual(len(bindings), len(kind(docs, "Role")) + len(kind(docs, "ClusterRole")))
+        for binding in bindings:
+            self.assertEqual(binding["subjects"], [{"kind": "ServiceAccount", "name": "argus", "namespace": "argus"}])
+
+    def test_a_disabled_check_gets_no_permissions(self):
+        everything = permissions(render(values=ALL_CHECKS))
+        only = {}
+        for check in CHECKS:
+            values = all_checks_values()
+            values["checks"][check]["enabled"] = False
+            docs = render_values(values)
+            config = config_of(docs)
+            self.assertNotIn(check, config["checks"])
+            check_config(config)
+            self.assertTrue(permissions(docs) <= everything, check)
+            values = copy.deepcopy(all_checks_values())
+            for other in CHECKS:
+                values["checks"][other]["enabled"] = other == check
+            docs = render_values(values)
+            only[check] = permissions(docs)
+            check_config(config_of(docs))
+        # The union of single-check grants is exactly the all-checks grant.
+        self.assertEqual(set().union(*only.values()), everything)
+        self.assertEqual(only["hosts"], set())
+        self.assertEqual(only["argocd"], {("Role", "argocd", "argoproj.io", "applications", "list")})
+        self.assertEqual({p for p in everything if p[3] == "configmaps"}, {("Role", "argus", "", "configmaps", "get"), ("Role", "argus", "", "configmaps", "update")})
+        self.assertTrue({p for p in everything if p[3] == "configmaps"} <= only["pgbackrest"])
+
+    def test_state_configmap_is_created_once_and_kept(self):
+        docs = render()
+        state = next(d for d in kind(docs, "ConfigMap") if d["metadata"]["name"] == "argus-state")
+        self.assertEqual(json.loads(state["data"]["pgbackrest.json"]), {"version": 2, "entries": {}})
+        self.assertEqual(state["metadata"]["annotations"]["helm.sh/resource-policy"], "keep")
+        self.assertEqual(state["metadata"]["annotations"]["argocd.argoproj.io/sync-options"], "Prune=false,Delete=false")
+
+    def test_token_projected_only_into_the_argus_container(self):
+        docs = render(values=ALL_CHECKS)
+        pod = kind(docs, "Deployment")[0]["spec"]["template"]["spec"]
+        self.assertFalse(pod["automountServiceAccountToken"])
+        self.assertFalse(kind(docs, "ServiceAccount")[0]["automountServiceAccountToken"])
+        self.assertEqual([c["name"] for c in pod["containers"]], ["argus"])
+        mounts = {m["name"]: m for m in pod["containers"][0]["volumeMounts"]}
+        self.assertEqual(mounts["kubernetes-api-access"]["mountPath"], "/var/run/secrets/kubernetes.io/serviceaccount")
+        self.assertTrue(all(m["readOnly"] for m in mounts.values()))
+        volumes = {v["name"]: v for v in pod["volumes"]}
+        sources = volumes["kubernetes-api-access"]["projected"]["sources"]
+        self.assertEqual(sources[0]["serviceAccountToken"]["path"], "token")
+        self.assertEqual(volumes["api-auth"]["secret"], {"secretName": "chart-validation-only", "defaultMode": 0o440, "items": [{"key": "token", "path": "token"}]})
+        self.assertEqual(volumes["tls"]["secret"]["secretName"], "argus-tls")
+        self.assertEqual(volumes["ssh"]["secret"]["items"], [{"key": "ssh_private_key", "path": "ssh_private_key"}])
+        self.assertFalse(kind(docs, "Secret"))
+        config = config_of(docs)
+        self.assertEqual(config["tokenFile"], mounts["api-auth"]["mountPath"] + "/token")
+
+    def test_optional_certificate(self):
+        self.assertFalse(kind(render(), "Certificate"))
+        cert = kind(render(values=ALL_CHECKS), "Certificate")[0]["spec"]
+        self.assertEqual(cert["secretName"], "argus-tls")
+        self.assertEqual(cert["issuerRef"], {"name": "example-ca-issuer", "kind": "ClusterIssuer", "group": "cert-manager.io"})
+        self.assertIn("argus.argus.svc", cert["dnsNames"])
+        plain = render("--set", "tls.enabled=false")
+        container = kind(plain, "Deployment")[0]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(container["livenessProbe"]["httpGet"]["scheme"], "HTTP")
+        self.assertNotIn("tls", config_of(plain))
+
+    def test_network_policy(self):
+        self.assertFalse(kind(render(), "NetworkPolicy"))
+        policy = kind(render(values=ALL_CHECKS), "NetworkPolicy")[0]["spec"]
+        self.assertEqual(policy["policyTypes"], ["Ingress", "Egress"])
+        self.assertEqual(policy["ingress"], [{"from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "monitoring"}}}], "ports": [{"port": 8443, "protocol": "TCP"}]}])
+        egress = policy["egress"]
+        self.assertEqual(egress[0]["to"], [{"ipBlock": {"cidr": "10.43.0.1/32"}}])
+        self.assertEqual([p["port"] for p in egress[1]["ports"]], [53, 53])
+        self.assertEqual(egress[2:], [
+            {"to": [{"ipBlock": {"cidr": "192.0.2.10/32"}}], "ports": [{"port": 22, "protocol": "TCP"}]},
+            {"to": [{"ipBlock": {"cidr": "192.0.2.11/32"}}], "ports": [{"port": 2222, "protocol": "TCP"}]},
+        ])
+        values = all_checks_values()
+        values["checks"]["hosts"]["hosts"].append({"name": "named", "address": "host.example.internal"})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
+            yaml.safe_dump(values, f)
+            f.flush()
+            result = run("-f", f.name)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("networkPolicy.sshPeers", result.stderr)
+            policy = kind([d for d in yaml.safe_load_all(subprocess.run(
+                [HELM, "template", "argus", str(CHART), "-n", "argus", "-f", f.name, "--set", "networkPolicy.sshPeers[0].cidr=198.51.100.0/24", "--set", "networkPolicy.sshPeers[0].port=22"],
+                check=True, text=True, capture_output=True).stdout) if d], "NetworkPolicy")[0]["spec"]
+            self.assertEqual(policy["egress"][-1]["to"], [{"ipBlock": {"cidr": "198.51.100.0/24"}}])
+
+    def test_required_values_fail_closed(self):
+        for args, message in (
+            ((), "accessControl.existingSecret"),
+            (("--set", "accessControl.existingSecret=x"), "tls.existingSecret"),
+            (("-f", str(DEFAULTS), "--set", "checks.hosts.enabled=true", "--set", "checks.hosts.hosts[0].name=a", "--set", "checks.hosts.hosts[0].address=192.0.2.1"), "ssh.knownHosts"),
+            (("-f", str(DEFAULTS), "--set", "checks.hosts.enabled=true", "--set", "ssh.knownHosts=x"), "ssh.existingSecret"),
+            (("-f", str(DEFAULTS), "--set", "networkPolicy.enabled=true"), "networkPolicy.apiPeers"),
+            (("-f", str(DEFAULTS), "--set", "tls.certificate.create=true"), "tls.certificate.issuerRef.name"),
+        ):
+            result = run(*args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIn(message, result.stderr, args)
+        for override in ("checks.unknown.enabled=true", "config.unknown=1", "checks.pki.rootSHA256=abc", "image.digest=latest",
+                         "checks.pgbackrest.clusters[0].namespace=db", "service.port=0"):
+            self.assertNotEqual(run("-f", str(DEFAULTS), "--set", override).returncode, 0, override)
+
+    def test_cluster_rbac_names_are_collision_resistant(self):
+        first = kind(render(release="c", namespace="a-b", values=ALL_CHECKS), "ClusterRole")[0]
+        second = kind(render(release="b-c", namespace="a", values=ALL_CHECKS), "ClusterRole")[0]
+        self.assertNotEqual(first["metadata"]["name"], second["metadata"]["name"])
+        self.assertLessEqual(len(first["metadata"]["name"]), 63)
+        docs = render(values=ALL_CHECKS)
+        role, binding = kind(docs, "ClusterRole")[0], kind(docs, "ClusterRoleBinding")[0]
+        self.assertEqual(role["metadata"]["name"], binding["roleRef"]["name"])
+
+
+if __name__ == "__main__":
+    unittest.main()

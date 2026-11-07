@@ -1,0 +1,109 @@
+{
+  "checks": {
+    "argocd": {
+      "namespace": "argocd"
+    },
+    "certificates": {
+      "excludeIssuers": [
+        "selfsigned-ca-issuer"
+      ]
+    },
+    "cronjobs": {
+      "items": [
+        {
+          "maxAgeSeconds": 10800,
+          "name": "app-sync",
+          "namespace": "app"
+        }
+      ]
+    },
+    "externalsecrets": {},
+    "hosts": {
+      "collectionTimeoutSeconds": 120,
+      "hosts": [
+        {
+          "address": "192.0.2.10",
+          "name": "bastion"
+        },
+        {
+          "address": "192.0.2.11:2222",
+          "expects": [
+            "zfs"
+          ],
+          "name": "nas"
+        }
+      ],
+      "intervalSeconds": 600,
+      "knownHostsFile": "/config/known_hosts",
+      "maxSampleAgeSeconds": 1500,
+      "privateKeyFile": "/var/run/argus-ssh/ssh_private_key",
+      "timeoutSeconds": 30,
+      "user": "argus"
+    },
+    "longhorn": {
+      "expectedPVCs": [
+        "app/data"
+      ],
+      "maxBackupAgeSeconds": 108000,
+      "namespace": "longhorn-system",
+      "systemBackupGraceSeconds": 3600,
+      "systemBackupMaxAgeSeconds": 691200
+    },
+    "nodes": {
+      "expected": [
+        "node-a",
+        "node-b"
+      ],
+      "longhornNamespace": "longhorn-system"
+    },
+    "pgbackrest": {
+      "clusters": [
+        {
+          "name": "database",
+          "namespace": "database",
+          "repos": {
+            "repo1": {},
+            "repo2": {
+              "maxAgeSeconds": 36000
+            }
+          }
+        }
+      ],
+      "maxAgeSeconds": 28800
+    },
+    "pki": {
+      "expectedBundles": [
+        "example-ca"
+      ],
+      "expectedCertificates": [
+        {
+          "name": "selfsigned-ca",
+          "namespace": "cert-manager"
+        }
+      ],
+      "rootSHA256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "postgres": {
+      "clusters": [
+        {
+          "name": "database",
+          "namespace": "database"
+        }
+      ]
+    }
+  },
+  "collectionTimeoutSeconds": 45,
+  "listenAddress": ":8443",
+  "maxSampleAgeSeconds": 180,
+  "pollIntervalSeconds": 60,
+  "requestTimeoutSeconds": 10,
+  "state": {
+    "name": "argus-state",
+    "namespace": "argus"
+  },
+  "tls": {
+    "certFile": "/var/run/argus-tls/tls.crt",
+    "keyFile": "/var/run/argus-tls/tls.key"
+  },
+  "tokenFile": "/var/run/argus-auth/token"
+}

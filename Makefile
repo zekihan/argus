@@ -24,14 +24,14 @@ audit: lint test test/race test/integration
 container-test:
 	./scripts/container_smoke.sh
 chart-test: build
-	$(HELM) lint --strict charts/argus --set accessControl.existingSecret=chart-validation-only
+	$(HELM) lint --strict charts/argus -f charts/argus/ci/default-values.yaml
 	$(HELM) lint --strict charts/argus -f charts/argus/ci/all-checks-values.yaml
 	HELM=$(HELM) $(PYTHON) tests/helm/test_chart.py
 chart-package: chart-test
 	mkdir -p dist/charts
 	$(HELM) package charts/argus --destination dist/charts
 chart-released-check: build
-	HELM=$(HELM) ./scripts/check_released_chart.sh dist/argus
+	HELM=$(HELM) PYTHON=$(PYTHON) ./scripts/check_released_chart.sh dist/argus
 release-check:
 	./scripts/release_version.sh
 	goreleaser check

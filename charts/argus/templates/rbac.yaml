@@ -1,0 +1,105 @@
+{{- /*
+RBAC is rendered from the enabled checks; a disabled check gets nothing.
+ClusterRole (get, list): cluster-wide discovery and objects carrying no
+credentials. Namespace Roles (list): only where pod or controller specs would
+otherwise be readable cluster-wide. get/update on the state ConfigMap only.
+No Secrets, pods or nodes/proxy anywhere.
+*/ -}}
+{{- if .Values.rbac.create }}
+{{- $sa := include "argus.serviceAccount" . }}
+{{- $clusterRules := include "argus.clusterRules" . | fromJson }}
+{{- if $clusterRules }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "argus.clusterRoleName" . }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+rules:
+  {{- range $group := keys $clusterRules | sortAlpha }}
+  - apiGroups: [{{ $group | quote }}]
+    resources: {{ get $clusterRules $group | toJson }}
+    verbs: [get, list]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "argus.clusterRoleName" . }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "argus.clusterRoleName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- $namespaceRules := include "argus.namespaceRules" . | fromJson }}
+{{- range $namespace := keys $namespaceRules | sortAlpha }}
+{{- $groups := get $namespaceRules $namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argus.fullname" $ }}-reader
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "argus.labels" $ | nindent 4 }}
+rules:
+  {{- range $group := keys $groups | sortAlpha }}
+  - apiGroups: [{{ $group | quote }}]
+    resources: {{ get $groups $group | toJson }}
+    verbs: [list]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "argus.fullname" $ }}-reader
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "argus.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "argus.fullname" $ }}-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- if .Values.checks.pgbackrest.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argus.fullname" . }}-state
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ .Values.state.configMapName | quote }}]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "argus.fullname" . }}-state
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "argus.fullname" . }}-state
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

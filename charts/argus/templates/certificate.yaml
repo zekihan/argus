@@ -1,0 +1,31 @@
+{{- if and .Values.tls.enabled .Values.tls.certificate.create }}
+{{- $fullname := include "argus.fullname" . }}
+{{- $issuer := .Values.tls.certificate.issuerRef }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $fullname }}-tls
+  duration: {{ .Values.tls.certificate.duration }}
+  renewBefore: {{ .Values.tls.certificate.renewBefore }}
+  privateKey:
+    {{- toYaml .Values.tls.certificate.privateKey | nindent 4 }}
+  usages: [server auth, digital signature]
+  dnsNames:
+    {{- with .Values.tls.certificate.dnsNames }}
+    {{- toYaml . | nindent 4 }}
+    {{- else }}
+    - {{ $fullname }}
+    - {{ $fullname }}.{{ .Release.Namespace }}
+    - {{ $fullname }}.{{ .Release.Namespace }}.svc
+    - {{ $fullname }}.{{ .Release.Namespace }}.svc.cluster.local
+    {{- end }}
+  issuerRef:
+    name: {{ required "tls.certificate.issuerRef.name must name a cert-manager issuer" $issuer.name }}
+    kind: {{ $issuer.kind }}
+    group: {{ $issuer.group }}
+{{- end }}

@@ -1,0 +1,173 @@
+nameOverride: ""
+fullnameOverride: ""
+image:
+  repository: ghcr.io/zekihan/argus
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Must identify an existing Secret holding the API bearer token; the chart
+# does not issue credentials. Every route except /healthz requires it.
+accessControl:
+  existingSecret: ""
+  secretKey: token
+
+# Argus serves TLS itself and re-reads the certificate when it is renewed.
+tls:
+  enabled: true
+  # Secret with tls.crt and tls.key. Leave empty with certificate.create.
+  existingSecret: ""
+  certificate:
+    create: false
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+    # Defaults to the Service DNS names.
+    dnsNames: []
+    duration: 2160h
+    renewBefore: 720h
+    privateKey:
+      algorithm: ECDSA
+      size: 256
+      rotationPolicy: Always
+
+# The hosts check's SSH key and reviewed known_hosts. Required only when
+# checks.hosts.enabled is true. The key should be restricted on every host to
+# a forced probe command.
+ssh:
+  existingSecret: ""
+  secretKey: ssh_private_key
+  knownHosts: ""
+
+# The pgBackRest ledger ConfigMap. The chart creates it once with an empty
+# ledger; it is kept on uninstall and never pruned by Argo CD.
+state:
+  configMapName: argus-state
+
+# Global timing; each check may override intervalSeconds,
+# collectionTimeoutSeconds and maxSampleAgeSeconds.
+config:
+  pollIntervalSeconds: 60
+  maxSampleAgeSeconds: 180
+  requestTimeoutSeconds: 10
+  collectionTimeoutSeconds: 45
+
+# Each check is disabled by default and gets RBAC only when enabled. Every key
+# other than "enabled" is passed to the check's configuration section.
+checks:
+  hosts:
+    enabled: false
+    user: argus
+    intervalSeconds: 600
+    collectionTimeoutSeconds: 120
+    maxSampleAgeSeconds: 1500
+    timeoutSeconds: 30
+    # - {name: bastion, address: 192.0.2.10, expects: [zfs]}
+    hosts: []
+  nodes:
+    enabled: false
+    # Every node; a missing or unexpected node fails inventory.
+    expected: []
+    # Namespace of Longhorn's nodes.longhorn.io; empty skips longhorn_disk.
+    longhornNamespace: ""
+  postgres:
+    enabled: false
+    # - {namespace: database, name: database}
+    clusters: []
+  pgbackrest:
+    enabled: false
+    maxAgeSeconds: 28800
+    # - {namespace: database, name: database, repos: {repo1: {}}}
+    clusters: []
+  longhorn:
+    enabled: false
+    namespace: longhorn-system
+    # namespace/pvc of every volume in the backup recurring-job group
+    expectedPVCs: []
+    maxBackupAgeSeconds: 108000
+    systemBackupMaxAgeSeconds: 691200
+    systemBackupGraceSeconds: 3600
+  cronjobs:
+    enabled: false
+    # - {namespace: app, name: app-job, maxAgeSeconds: 10800}
+    items: []
+  certificates:
+    enabled: false
+    # The shared CA issuer is covered by the pki check.
+    excludeIssuers: [selfsigned-ca-issuer]
+  pki:
+    enabled: false
+    rootSHA256: ""
+    expectedCertificates: []
+    expectedBundles: []
+  externalsecrets:
+    enabled: false
+  argocd:
+    enabled: false
+    namespace: argocd
+
+service:
+  port: 8443
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+rbac:
+  create: true
+
+networkPolicy:
+  enabled: false
+  # Explicit API Service and endpoint CIDRs; CNI DNAT behaviour varies.
+  apiPeers: []
+  apiPorts: [443, 6443]
+  # NetworkPolicy peers allowed to reach the API (for example the Gatus pod).
+  ingressFrom: []
+  dns:
+    enabled: true
+    peers:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+  # SSH egress to IPv4 host addresses is derived from checks.hosts.hosts;
+  # list {cidr, port} here for hosts given by name.
+  sshPeers: []
+  extraEgress: []
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+    ephemeral-storage: 16Mi
+  limits:
+    memory: 128Mi
+    ephemeral-storage: 64Mi
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 25120
+  runAsGroup: 25120
+  fsGroup: 25120
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+probes:
+  startup:
+    periodSeconds: 5
+    failureThreshold: 12
+  liveness:
+    periodSeconds: 20
+  readiness:
+    periodSeconds: 10
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,17 @@
+{{- /*
+The ledger ConfigMap is created once with an empty ledger and then belongs to
+Argus: kept on uninstall and never pruned or deleted by Argo CD. Its data must
+be excluded from Argo CD diffs by name (see the README).
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.state.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+data:
+  pgbackrest.json: '{"version":2,"entries":{}}'

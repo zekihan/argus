@@ -1,0 +1,5 @@
+# Only the required values: every check disabled, TLS from an existing Secret.
+accessControl:
+  existingSecret: chart-validation-only
+tls:
+  existingSecret: chart-validation-only

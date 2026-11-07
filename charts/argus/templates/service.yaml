@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "argus.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "argus.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: {{ ternary "https" "http" .Values.tls.enabled }}
+      port: {{ .Values.service.port }}
+      targetPort: api
+      protocol: TCP
