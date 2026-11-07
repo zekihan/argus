@@ -1,0 +1,11 @@
+/dist/
+/tmp/
+/release-assets/
+/renders/
+.idea/
+.vscode/
+.env
+*.tfplan
+__pycache__/
+*.pyc
+coverage.out
