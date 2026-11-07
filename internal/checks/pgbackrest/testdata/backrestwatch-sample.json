@@ -1,0 +1,1557 @@
+{
+ "clusters": [
+  {
+   "metadata": {
+    "namespace": "alpha",
+    "name": "alpha",
+    "uid": "00000000-0000-4000-8000-000000000001",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-alpha",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/alpha/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/alpha/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "bravo",
+    "name": "bravo",
+    "uid": "00000000-0000-4000-8000-000000000002",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-bravo",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/bravo/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/bravo/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "charlie",
+    "name": "charlie",
+    "uid": "00000000-0000-4000-8000-000000000003",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-charlie-v2",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/charlie/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/charlie/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "delta",
+    "name": "delta",
+    "uid": "00000000-0000-4000-8000-000000000004",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-delta-v2",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/delta/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/delta/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "echo",
+    "name": "echo",
+    "uid": "00000000-0000-4000-8000-000000000005",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-echo",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/echo/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/echo/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "foxtrot",
+    "name": "foxtrot",
+    "uid": "00000000-0000-4000-8000-000000000006",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-foxtrot",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/foxtrot/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/foxtrot/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "golf",
+    "name": "golf",
+    "uid": "00000000-0000-4000-8000-000000000007",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-golf",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/golf/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/golf/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "hotel",
+    "name": "hotel",
+    "uid": "00000000-0000-4000-8000-000000000008",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-hotel",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/hotel/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/hotel/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "india",
+    "name": "india",
+    "uid": "00000000-0000-4000-8000-000000000009",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-india",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/india/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/india/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "juliet",
+    "name": "juliet",
+    "uid": "00000000-0000-4000-8000-000000000010",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": null,
+    "ownerReferences": null
+   },
+   "spec": {
+    "backups": {
+     "pgbackrest": {
+      "repos": [
+       {
+        "name": "repo1",
+        "s3": {
+         "bucket": "backups-primary",
+         "endpoint": "s3.primary.example.com",
+         "region": "eu-central-1"
+        }
+       },
+       {
+        "name": "repo2",
+        "s3": {
+         "bucket": "backups-juliet",
+         "endpoint": "objects.secondary.example.net",
+         "region": "auto"
+        }
+       }
+      ],
+      "global": {
+       "repo1-block": "y",
+       "repo1-path": "/pgbackrest/juliet/repo1",
+       "repo1-retention-full": "2",
+       "repo2-bundle": "y",
+       "repo2-path": "/pgbackrest/juliet/repo2",
+       "repo2-retention-full": "4",
+       "repo2-s3-uri-style": "path"
+      }
+     }
+    }
+   },
+   "status": {
+    "pgbackrest": {
+     "scheduledBackups": [
+      {
+       "repo": "repo1",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T01:00:40Z",
+       "startTime": "2026-11-07T01:00:00Z"
+      },
+      {
+       "repo": "repo2",
+       "succeeded": 1,
+       "completionTime": "2026-11-07T03:00:20Z",
+       "startTime": "2026-11-07T03:00:00Z"
+      }
+     ],
+     "repos": [
+      {
+       "name": "repo1",
+       "volume": ""
+      },
+      {
+       "name": "repo2",
+       "volume": ""
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "cronJobs": [
+  {
+   "metadata": {
+    "namespace": "alpha",
+    "name": "alpha-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000011",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "alpha",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "alpha",
+      "uid": "00000000-0000-4000-8000-000000000001",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "alpha",
+    "name": "alpha-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000012",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "alpha",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "alpha",
+      "uid": "00000000-0000-4000-8000-000000000001",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "bravo",
+    "name": "bravo-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000021",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "bravo",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "bravo",
+      "uid": "00000000-0000-4000-8000-000000000002",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "bravo",
+    "name": "bravo-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000022",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "bravo",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "bravo",
+      "uid": "00000000-0000-4000-8000-000000000002",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "charlie",
+    "name": "charlie-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000031",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "charlie",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "charlie",
+      "uid": "00000000-0000-4000-8000-000000000003",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "charlie",
+    "name": "charlie-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000032",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "charlie",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "charlie",
+      "uid": "00000000-0000-4000-8000-000000000003",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "delta",
+    "name": "delta-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000041",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "delta",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "delta",
+      "uid": "00000000-0000-4000-8000-000000000004",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "echo",
+    "name": "echo-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000051",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "echo",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "echo",
+      "uid": "00000000-0000-4000-8000-000000000005",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "echo",
+    "name": "echo-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000052",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "echo",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "echo",
+      "uid": "00000000-0000-4000-8000-000000000005",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "golf",
+    "name": "golf-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000071",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "golf",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "golf",
+      "uid": "00000000-0000-4000-8000-000000000007",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "golf",
+    "name": "golf-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000072",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "golf",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "golf",
+      "uid": "00000000-0000-4000-8000-000000000007",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "hotel",
+    "name": "hotel-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000081",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "hotel",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "hotel",
+      "uid": "00000000-0000-4000-8000-000000000008",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "hotel",
+    "name": "hotel-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000082",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "hotel",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "hotel",
+      "uid": "00000000-0000-4000-8000-000000000008",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "india",
+    "name": "india-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000091",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "india",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "india",
+      "uid": "00000000-0000-4000-8000-000000000009",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "india",
+    "name": "india-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000092",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "india",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "india",
+      "uid": "00000000-0000-4000-8000-000000000009",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "juliet",
+    "name": "juliet-repo1-incr",
+    "uid": "00000000-0000-4000-9000-00000000101",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "juliet",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "juliet",
+      "uid": "00000000-0000-4000-8000-000000000010",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "juliet",
+    "name": "juliet-repo2-incr",
+    "uid": "00000000-0000-4000-9000-00000000102",
+    "creationTimestamp": "2026-10-21T16:45:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "juliet",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "postgres-operator.crunchydata.com/v1beta1",
+      "kind": "PostgresCluster",
+      "name": "juliet",
+      "uid": "00000000-0000-4000-8000-000000000010",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "lastSuccessfulTime": "2026-11-07T09:00:30Z"
+   }
+  }
+ ],
+ "evaluatedAt": "2026-11-07T15:00:00Z",
+ "inventory": [
+  {
+   "namespace": "alpha",
+   "name": "alpha",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "bravo",
+   "name": "bravo",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "charlie",
+   "name": "charlie",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "delta",
+   "name": "delta",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "echo",
+   "name": "echo",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "foxtrot",
+   "name": "foxtrot",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "golf",
+   "name": "golf",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "hotel",
+   "name": "hotel",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "india",
+   "name": "india",
+   "repos": {
+    "repo1": {},
+    "repo2": {
+     "maxAgeSeconds": 36000
+    }
+   }
+  },
+  {
+   "namespace": "juliet",
+   "name": "juliet",
+   "repos": {
+    "repo1": {}
+   }
+  }
+ ],
+ "jobs": [
+  {
+   "metadata": {
+    "namespace": "alpha",
+    "name": "alpha-repo1-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000011-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "alpha",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "alpha-repo1-incr",
+      "uid": "00000000-0000-4000-9000-00000000011",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "alpha",
+    "name": "alpha-repo2-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000012-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "alpha",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "alpha-repo2-incr",
+      "uid": "00000000-0000-4000-9000-00000000012",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "charlie",
+    "name": "charlie-repo1-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000031-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "charlie",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "charlie-repo1-incr",
+      "uid": "00000000-0000-4000-9000-00000000031",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "charlie",
+    "name": "charlie-repo2-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000032-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "charlie",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "charlie-repo2-incr",
+      "uid": "00000000-0000-4000-9000-00000000032",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "echo",
+    "name": "echo-repo1-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000051-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "echo",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "echo-repo1-incr",
+      "uid": "00000000-0000-4000-9000-00000000051",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "echo",
+    "name": "echo-repo2-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000052-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "echo",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "echo-repo2-incr",
+      "uid": "00000000-0000-4000-9000-00000000052",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "golf",
+    "name": "golf-repo1-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000071-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "golf",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "golf-repo1-incr",
+      "uid": "00000000-0000-4000-9000-00000000071",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "golf",
+    "name": "golf-repo2-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000072-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "golf",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "golf-repo2-incr",
+      "uid": "00000000-0000-4000-9000-00000000072",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "india",
+    "name": "india-repo1-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000091-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "india",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo1"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "india-repo1-incr",
+      "uid": "00000000-0000-4000-9000-00000000091",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "india",
+    "name": "india-repo2-incr-1",
+    "uid": "00000000-0000-4000-9000-00000000092-job",
+    "creationTimestamp": "2026-11-07T13:00:00Z",
+    "labels": {
+     "postgres-operator.crunchydata.com/cluster": "india",
+     "postgres-operator.crunchydata.com/pgbackrest-backup": "scheduled",
+     "postgres-operator.crunchydata.com/pgbackrest-repo": "repo2"
+    },
+    "ownerReferences": [
+     {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "india-repo2-incr",
+      "uid": "00000000-0000-4000-9000-00000000092",
+      "controller": true
+     }
+    ]
+   },
+   "status": {
+    "succeeded": 1,
+    "completionTime": "2026-11-07T13:00:35Z",
+    "conditions": [
+     {
+      "type": "Complete",
+      "status": "True"
+     }
+    ]
+   }
+  }
+ ]
+}

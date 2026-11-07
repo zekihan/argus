@@ -1,0 +1,151 @@
+package monitor
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/zekihan/backrestwatch/internal/config"
+	"github.com/zekihan/backrestwatch/internal/evidence"
+	"github.com/zekihan/backrestwatch/internal/kube"
+)
+
+// Generates a ledger with backrestwatch's own Evaluate and evidence store.
+func TestGenerateRealLedger(t *testing.T) {
+	out := os.Getenv("LEDGER_OUT")
+	if out == "" {
+		t.Skip()
+	}
+	names := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"}
+	created := "2026-10-21T16:45:00Z"
+	bucket := map[string]string{}
+	for _, n := range names {
+		bucket[n] = "backups-" + n
+	}
+	type stamp = string
+	ts := func(t time.Time) stamp { return t.UTC().Format(time.RFC3339) }
+	build := func(now time.Time, extraJobs bool) kube.Sample {
+		var s kube.Sample
+		for i, n := range names {
+			uid := fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
+			raw := map[string]any{
+				"metadata": map[string]any{"namespace": n, "name": n, "uid": uid, "creationTimestamp": created},
+				"spec": map[string]any{"backups": map[string]any{"pgbackrest": map[string]any{
+					"repos": []any{
+						map[string]any{"name": "repo1", "s3": map[string]string{"bucket": "backups-primary", "endpoint": "s3.primary.example.com", "region": "eu-central-1"}},
+						map[string]any{"name": "repo2", "s3": map[string]string{"bucket": bucket[n], "endpoint": "objects.secondary.example.net", "region": "auto"}},
+					},
+					"global": map[string]string{"repo1-path": "/pgbackrest/" + n + "/repo1", "repo2-path": "/pgbackrest/" + n + "/repo2", "repo2-s3-uri-style": "path",
+						"repo1-retention-full": "2", "repo1-block": "y", "repo2-retention-full": "4", "repo2-bundle": "y"},
+				}}},
+				"status": map[string]any{"pgbackrest": map[string]any{
+					"repos": []any{map[string]any{"name": "repo1", "stanzaCreated": true}, map[string]any{"name": "repo2", "stanzaCreated": true}},
+					"scheduledBackups": []any{
+						map[string]any{"repo": "repo1", "succeeded": 1, "startTime": ts(now.Add(-14 * time.Hour)), "completionTime": ts(now.Add(-14*time.Hour + 40*time.Second))},
+						map[string]any{"repo": "repo2", "succeeded": 1, "startTime": ts(now.Add(-12 * time.Hour)), "completionTime": ts(now.Add(-12*time.Hour + 20*time.Second))},
+					}}},
+			}
+			data, _ := json.Marshal(raw)
+			var c kube.Cluster
+			if err := json.Unmarshal(data, &c); err != nil {
+				t.Fatal(err)
+			}
+			s.Clusters = append(s.Clusters, c)
+			for _, repo := range []string{"repo1", "repo2"} {
+				cronUID := fmt.Sprintf("00000000-0000-4000-9000-%010d%s", i+1, repo[4:])
+				cron := map[string]any{"metadata": map[string]any{"namespace": n, "name": n + "-" + repo + "-incr", "uid": cronUID, "creationTimestamp": created,
+					"labels":          map[string]string{kube.Prefix + "cluster": n, kube.Prefix + "pgbackrest-repo": repo, kube.Prefix + "pgbackrest-backup": "scheduled"},
+					"ownerReferences": []any{map[string]any{"apiVersion": kube.ClusterAPI, "kind": "PostgresCluster", "name": n, "uid": uid, "controller": true}}},
+					"status": map[string]any{"lastSuccessfulTime": ts(now.Add(-6*time.Hour + 30*time.Second))}}
+				data, _ = json.Marshal(cron)
+				var cj kube.CronJob
+				_ = json.Unmarshal(data, &cj)
+				if n != "foxtrot" {
+					s.CronJobs = append(s.CronJobs, cj)
+				}
+				if extraJobs && i%2 == 0 {
+					jobCreated := now.Add(-2 * time.Hour)
+					job := map[string]any{"metadata": map[string]any{"namespace": n, "name": n + "-" + repo + "-incr-1", "uid": cronUID + "-job", "creationTimestamp": ts(jobCreated),
+						"labels":          map[string]string{kube.Prefix + "cluster": n, kube.Prefix + "pgbackrest-repo": repo, kube.Prefix + "pgbackrest-backup": "scheduled"},
+						"ownerReferences": []any{map[string]any{"apiVersion": "batch/v1", "kind": "CronJob", "name": n + "-" + repo + "-incr", "uid": cronUID, "controller": true}}},
+						"status": map[string]any{"succeeded": 1, "completionTime": ts(jobCreated.Add(35 * time.Second)), "conditions": []any{map[string]string{"type": "Complete", "status": "True"}}}}
+					data, _ = json.Marshal(job)
+					var j kube.Job
+					_ = json.Unmarshal(data, &j)
+					s.Jobs = append(s.Jobs, j)
+				}
+			}
+		}
+		return s
+	}
+	cfg := config.Default()
+	for _, n := range names {
+		cfg.Clusters = append(cfg.Clusters, config.Cluster{Namespace: n, Name: n, Repos: map[string]config.Repository{"repo1": {}, "repo2": {MaxAgeSeconds: 36000}}})
+	}
+	t1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 11, 7, 15, 0, 0, 0, time.UTC)
+	_, ledger, err := Evaluate(cfg, build(t1, false), nil, t1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// charlie's repo2 destination moves; the barrier is satisfied by later Jobs.
+	bucket["charlie"] = "backups-charlie-v2"
+	_, ledger, err = Evaluate(cfg, build(t2, false), ledger, t2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// delta's repo2 moved an hour ago and has no eligible success yet: a pure barrier.
+	bucket["delta"] = "backups-delta-v2"
+	deltaChange := t3.Add(-time.Hour)
+	_, ledger, err = Evaluate(cfg, build(deltaChange, false), ledger, deltaChange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// juliet repo2 leaves the inventory: a tombstone must survive import.
+	cfg.Clusters[9].Repos = map[string]config.Repository{"repo1": {}}
+	final := build(t3, true)
+	// Remove delta's newer success sources so its barrier stays unsatisfied.
+	for i := range final.Clusters {
+		if final.Clusters[i].Metadata.Name == "delta" {
+			final.Clusters[i].Status.PGBackRest.ScheduledBackups = final.Clusters[i].Status.PGBackRest.ScheduledBackups[:1]
+		}
+	}
+	var jobs []kube.Job
+	for _, j := range final.Jobs {
+		if !(j.Metadata.Namespace == "delta" && j.Metadata.Labels[kube.Prefix+"pgbackrest-repo"] == "repo2") {
+			jobs = append(jobs, j)
+		}
+	}
+	final.Jobs = jobs
+	var crons []kube.CronJob
+	for _, c := range final.CronJobs {
+		if !(c.Metadata.Namespace == "delta" && c.Metadata.Labels[kube.Prefix+"pgbackrest-repo"] == "repo2") {
+			crons = append(crons, c)
+		}
+	}
+	final.CronJobs = crons
+	results, ledger, err := Evaluate(cfg, final, ledger, t3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := evidence.Open(filepath.Join(out, "evidence.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(ledger); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	_ = os.Remove(filepath.Join(out, "evidence.json.lock"))
+	sample, _ := json.MarshalIndent(map[string]any{"evaluatedAt": t3, "clusters": final.Clusters, "jobs": final.Jobs, "cronJobs": final.CronJobs, "inventory": cfg.Clusters}, "", " ")
+	if err := os.WriteFile(filepath.Join(out, "sample.json"), sample, 0644); err != nil {
+		t.Fatal(err)
+	}
+	for k, r := range results {
+		t.Log(k, r.Healthy, r.Reason)
+	}
+}
