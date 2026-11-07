@@ -1,0 +1,83 @@
+name: Checks
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      publishing:
+        description: Run container and release validation before publication
+        type: boolean
+        default: false
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Validate release versions
+        run: ./scripts/release_version.sh
+      - name: Check workflow security policy
+        run: |
+          python3 -m venv "$RUNNER_TEMP/workflow-policy-venv"
+          "$RUNNER_TEMP/workflow-policy-venv/bin/pip" install -r tests/workflows/requirements.txt
+          "$RUNNER_TEMP/workflow-policy-venv/bin/python" scripts/check_workflows.py
+          "$RUNNER_TEMP/workflow-policy-venv/bin/python" -m unittest discover -s tests/workflows
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          args: --build-tags=integration
+      - name: Validate modules and formatting
+        run: |
+          test -z "$(gofmt -l cmd internal tests/integration)"
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - run: make test test/race test/integration build
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          install-only: true
+          version: v2.20.0
+      - run: make release-check
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - run: make container-test
+    if: ${{ inputs.publishing }}
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/chart-venv"
+          "$RUNNER_TEMP/chart-venv/bin/pip" install -r tests/helm/requirements.txt
+      - run: make chart-package PYTHON="$RUNNER_TEMP/chart-venv/bin/python"
+      # An edge image runs against the latest released chart, so this build must
+      # accept every configuration that chart renders. No-op before the first release.
+      - name: Check configuration from the latest released chart
+        run: make chart-released-check PYTHON="$RUNNER_TEMP/chart-venv/bin/python"

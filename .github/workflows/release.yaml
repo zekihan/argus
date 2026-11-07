@@ -1,0 +1,77 @@
+name: Publish
+'on':
+  push:
+    tags:
+      - v*
+  schedule:
+    - cron: 17 3 * * *
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild unchanged edge inputs
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  decide:
+    uses: zekihan/release-workflows/.github/workflows/decide.yaml@4f1cb243269e5e0d3707aae9aeb26899b60899e0 # main
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    with:
+      mode: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'edge' }}
+      image: argus
+      force: ${{ inputs.force || false }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  checks:
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
+    uses: ./.github/workflows/pr.yaml
+    permissions:
+      contents: read
+    with:
+      publishing: true
+  publish:
+    needs:
+      - decide
+      - checks
+    uses: zekihan/release-workflows/.github/workflows/image.yaml@4f1cb243269e5e0d3707aae9aeb26899b60899e0 # main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      image: argus
+      mode: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'edge' }}
+      version: ${{ needs.decide.outputs.version }}
+      fingerprint: ${{ needs.decide.outputs.fingerprint }}
+      qemu: false
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  release:
+    needs:
+      - decide
+      - checks
+      - publish
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    uses: zekihan/release-workflows/.github/workflows/release.yaml@4f1cb243269e5e0d3707aae9aeb26899b60899e0 # main
+    permissions:
+      contents: write
+      packages: write
+    with:
+      version: ${{ needs.decide.outputs.version }}
+      binaries: true
+      image: argus
+      image-digest: ${{ needs.publish.outputs.digest }}
+      chart-path: charts/argus
+      chart-name: argus
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}

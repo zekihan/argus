@@ -1,0 +1,27 @@
+version: 2
+project_name: argus
+builds:
+  - id: all
+    main: ./cmd/argus
+    binary: argus
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+archives:
+  - id: all
+    ids: [all]
+    formats: [tar.gz]
+    files: [LICENSE, NOTICE, LICENSES/**, README.md, examples/**, docs/**, charts/argus/**]
+checksum:
+  name_template: checksums.txt
+changelog:
+  sort: asc
+release:
+  github:
+    owner: zekihan
+    name: argus
+  ids: [all]

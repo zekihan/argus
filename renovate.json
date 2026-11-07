@@ -1,0 +1,31 @@
+{
+  "extends": [
+    "github>zekihan/renovate-config"
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "groupName": "go dependencies"
+    },
+    {
+      "description": "Review immutable GitHub Action pins; keep release comments",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "pinDigests": true,
+      "automerge": false
+    },
+    {
+      "description": "Keep action version inputs as release tags",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepTypes": [
+        "uses-with"
+      ],
+      "pinDigests": false
+    }
+  ]
+}

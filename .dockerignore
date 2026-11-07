@@ -1,0 +1,8 @@
+.git
+.idea
+dist
+tmp
+.env
+work
+tests
+charts
