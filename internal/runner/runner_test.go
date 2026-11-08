@@ -35,9 +35,24 @@ func (f *fakeCheck) Collect(context.Context, func() time.Time) ([]result.Collect
 	return f.collections, f.err
 }
 
-type fakeHealth struct{ h kube.Health }
+type fakeHealth struct {
+	h     kube.Health
+	since time.Time
+}
 
-func (f *fakeHealth) Health() kube.Health { return f.h }
+func (f *fakeHealth) Health(since time.Time) kube.Health { f.since = since; return f.h }
+
+// Permission outcomes are judged within the longest sample lifetime.
+func TestPermissionWindowIsTheLongestSampleLifetime(t *testing.T) {
+	api := &fakeHealth{}
+	r := New(slog.New(slog.DiscardHandler), "test", api, 3*time.Minute)
+	r.Add(&fakeCheck{}, Timing{Interval: time.Minute, Timeout: time.Second, MaxAge: 25 * time.Minute})
+	now := time.Now()
+	r.Index(now)
+	if !api.since.Equal(now.Add(-25 * time.Minute)) {
+		t.Fatal(api.since)
+	}
+}
 
 func healthyCollections() []result.Collection {
 	return []result.Collection{

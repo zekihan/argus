@@ -79,9 +79,8 @@ type Client struct {
 
 	mu     sync.Mutex
 	health Health
-	// paths holds the latest permission outcome per resource path: true
-	// after a success, false after a 403 or 404.
-	paths map[string]bool
+	// paths holds the latest permission outcome per resource path.
+	paths map[string]outcome
 }
 
 // Health is the outcome of recent API requests.
@@ -94,10 +93,16 @@ type Health struct {
 	// API or a CRD conversion webhook fails only the check that asked.
 	LastFailure time.Time
 	FailureCode string
-	// OKPaths and ForbiddenPaths count resource paths whose latest outcome
-	// was a success or a refusal (403/404). Only refusals everywhere is an
-	// RBAC-wide failure; one refusal fails only its own check.
+	// OKPaths and ForbiddenPaths count resource paths whose latest outcome,
+	// within the window passed to Health, was a success or a refusal
+	// (403/404). Only refusals everywhere is an RBAC-wide failure; one
+	// refusal fails only its own check.
 	OKPaths, ForbiddenPaths int
+}
+
+type outcome struct {
+	ok bool
+	at time.Time
 }
 
 // Loopback reports whether origin is a plain-HTTP loopback origin such as a
@@ -146,15 +151,19 @@ func New(base, tokenFile, caFile, version string, timeout time.Duration) (*Clien
 	return client, nil
 }
 
-// Health returns the outcome of recent API requests.
-func (c *Client) Health() Health {
+// Health returns the outcome of recent API requests. Permission outcomes
+// older than since are ignored, so a success from before a revocation does
+// not hide refusals once a check stops at its first refused read.
+func (c *Client) Health(since time.Time) Health {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	h := c.health
-	for _, ok := range c.paths {
-		if ok {
+	for _, o := range c.paths {
+		switch {
+		case o.at.Before(since):
+		case o.ok:
 			h.OKPaths++
-		} else {
+		default:
 			h.ForbiddenPaths++
 		}
 	}
@@ -183,13 +192,13 @@ func (c *Client) record(path string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.paths == nil {
-		c.paths = map[string]bool{}
+		c.paths = map[string]outcome{}
 	}
 	now := time.Now()
 	if err == nil {
 		c.health.LastSuccess = now
 		if resourcePath(path) {
-			c.paths[path] = true
+			c.paths[path] = outcome{ok: true, at: now}
 		}
 		return
 	}
@@ -202,7 +211,7 @@ func (c *Client) record(path string, err error) {
 		// A canceled collection or a lost precondition says nothing about the API.
 	case CodeForbidden, CodeNotFound:
 		if resourcePath(path) {
-			c.paths[path] = false
+			c.paths[path] = outcome{ok: false, at: now}
 		}
 	case CodeToken, CodeUnauthorized, CodeUnreachable:
 		c.health.LastFailure, c.health.FailureCode = now, kerr.Code

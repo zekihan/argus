@@ -87,7 +87,7 @@ func TestPaginationAndTokenRotation(t *testing.T) {
 	if err != nil || len(items) != 6 || calls.Load() != 6 {
 		t.Fatal(items, calls.Load(), err)
 	}
-	if client.Health().LastSuccess.IsZero() {
+	if client.Health(time.Time{}).LastSuccess.IsZero() {
 		t.Fatal("success not recorded")
 	}
 }
@@ -119,7 +119,7 @@ func TestPaginationFailureDiscardsPartialSample(t *testing.T) {
 	if err == nil || len(items) != 0 || strings.Contains(err.Error(), "sensitive") || CodeOf(err) != CodeForbidden {
 		t.Fatal(items, err)
 	}
-	if h := client.Health(); h.ForbiddenPaths != 1 || h.OKPaths != 1 || !h.LastFailure.IsZero() {
+	if h := client.Health(time.Time{}); h.ForbiddenPaths != 1 || h.OKPaths != 1 || !h.LastFailure.IsZero() {
 		t.Fatal("refusals not recorded as missing permissions", h)
 	}
 }
@@ -133,20 +133,47 @@ func TestHealthTracksTheLatestOutcome(t *testing.T) {
 	})
 	var out map[string]any
 	_ = client.Get(t.Context(), "/version", &out)
-	ok := client.Health()
+	ok := client.Health(time.Time{})
 	if ok.LastSuccess.IsZero() || !ok.LastFailure.IsZero() {
 		t.Fatal(ok)
 	}
 	status.Store(401)
 	_ = client.Get(t.Context(), "/version", &out)
-	failed := client.Health()
+	failed := client.Health(time.Time{})
 	if failed.FailureCode != CodeUnauthorized || !failed.LastFailure.After(failed.LastSuccess) {
 		t.Fatal("failure after success not recorded", failed)
 	}
 	status.Store(200)
 	_ = client.Get(t.Context(), "/version", &out)
-	if recovered := client.Health(); !recovered.LastSuccess.After(recovered.LastFailure) {
+	if recovered := client.Health(time.Time{}); !recovered.LastSuccess.After(recovered.LastFailure) {
 		t.Fatal("recovery not recorded", recovered)
+	}
+}
+
+// A success from before a revocation must not hide later refusals: a check
+// stops at its first refused read, so its other paths are never re-read.
+func TestRevokedPermissionsOutliveEarlierSuccesses(t *testing.T) {
+	var revoked atomic.Bool
+	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		if revoked.Load() {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1"},"items":[]}`))
+	})
+	if _, err := collect(t.Context(), client); err != nil {
+		t.Fatal(err)
+	}
+	revoked.Store(true)
+	before := time.Now()
+	if _, err := collect(t.Context(), client); CodeOf(err) != CodeForbidden {
+		t.Fatal(err)
+	}
+	if h := client.Health(time.Time{}); h.OKPaths != 2 || h.ForbiddenPaths != 1 {
+		t.Fatal("expected two stale successes and one refusal over all time", h)
+	}
+	if h := client.Health(before); h.OKPaths != 0 || h.ForbiddenPaths != 1 {
+		t.Fatal("successes before the revocation were counted", h)
 	}
 }
 
@@ -166,12 +193,12 @@ func TestAggregatedAPIFailureIsNotAnAPIFailure(t *testing.T) {
 	if _, err := List[named](t.Context(), client, "/apis/metrics.k8s.io/v1beta1/nodes", ""); CodeOf(err) != CodeHTTP {
 		t.Fatal(err)
 	}
-	if h := client.Health(); !h.LastFailure.IsZero() || h.LastSuccess.IsZero() {
+	if h := client.Health(time.Time{}); !h.LastFailure.IsZero() || h.LastSuccess.IsZero() {
 		t.Fatal("aggregated API failure recorded as API-wide", h)
 	}
 	core, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	_, _ = List[named](t.Context(), core, "/api/v1/nodes", "")
-	if h := core.Health(); h.FailureCode != CodeHTTP {
+	if h := core.Health(time.Time{}); h.FailureCode != CodeHTTP {
 		t.Fatal("core API failure not recorded", h)
 	}
 }

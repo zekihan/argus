@@ -52,9 +52,9 @@ func Code(err error) string {
 	return "collection_error"
 }
 
-// HealthSource reports the outcome of recent API requests.
+// HealthSource reports the outcome of API requests made since a time.
 type HealthSource interface {
-	Health() kube.Health
+	Health(since time.Time) kube.Health
 }
 
 // Timing is one check's schedule.
@@ -354,7 +354,13 @@ func (r *Runner) apiserver(now time.Time) string {
 	if r.api == nil {
 		return result.NA
 	}
-	h := r.api.Health()
+	// Permission outcomes count within the longest sample lifetime, so a
+	// slow check's last success is still current between its polls.
+	window := r.apiMaxAge
+	for _, e := range r.entries {
+		window = max(window, e.timing.MaxAge)
+	}
+	h := r.api.Health(now.Add(-window))
 	switch {
 	// The latest outcome decides: a failure after the last success trips the
 	// gate at once, and a success after it clears it.
