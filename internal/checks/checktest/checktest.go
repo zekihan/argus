@@ -21,8 +21,8 @@ type fixed struct {
 	now time.Time
 }
 
-func (f fixed) Collect(ctx context.Context, _ time.Time) ([]result.Collection, error) {
-	return f.Check.Collect(ctx, f.now)
+func (f fixed) Collect(ctx context.Context, _ func() time.Time) ([]result.Collection, error) {
+	return f.Check.Collect(ctx, func() time.Time { return f.now })
 }
 
 // Harness is a runner with one check, plus everything it logged.

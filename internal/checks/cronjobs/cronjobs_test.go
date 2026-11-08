@@ -169,3 +169,22 @@ func TestMissingCronJobFailsClosed(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+type slowAPI struct{}
+
+// Collect returns a success recorded while the sample was being read.
+func (slowAPI) Collect(context.Context) (Sample, error) {
+	time.Sleep(20 * time.Millisecond)
+	completed := time.Now().UTC().Format(time.RFC3339Nano)
+	c := CronJob{}
+	c.Metadata.Namespace, c.Metadata.Name, c.Metadata.UID = "a", "b", "cron-uid"
+	c.Status.LastSuccessfulTime = &completed
+	return Sample{CronJobs: []CronJob{c}}, nil
+}
+
+func TestEvaluatesAfterCollecting(t *testing.T) {
+	h := checktest.New(New(inventory("a", "b", 10800), slowAPI{}), time.Time{}).Refresh(t)
+	if code, e := h.Get(t, Route+"/a/b"); code != 200 {
+		t.Fatal("a success recorded during collection was judged future", e.Results)
+	}
+}

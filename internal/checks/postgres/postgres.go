@@ -88,11 +88,13 @@ func (c *Check) Describe() []result.Collection {
 	return []result.Collection{collection}
 }
 
-func (c *Check) Collect(ctx context.Context, now time.Time) ([]result.Collection, error) {
+func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error) {
 	clusters, err := c.api.Collect(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// Evaluate after reading: objects updated during the read are not "future".
+	now := clock()
 	return []result.Collection{c.Evaluate(clusters, now)}, nil
 }
 

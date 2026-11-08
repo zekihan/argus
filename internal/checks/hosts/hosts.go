@@ -63,7 +63,7 @@ func (c *Check) Describe() []result.Collection {
 	return []result.Collection{collection}
 }
 
-func (c *Check) Collect(ctx context.Context, _ time.Time) ([]result.Collection, error) {
+func (c *Check) Collect(ctx context.Context, _ func() time.Time) ([]result.Collection, error) {
 	items := make([]result.Item, len(c.config.Hosts))
 	limit := make(chan struct{}, c.config.Concurrency)
 	var wg sync.WaitGroup

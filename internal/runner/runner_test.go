@@ -28,7 +28,7 @@ func (f *fakeCheck) Describe() []result.Collection {
 		{Route: "things/system", Check: "things/system", Singleton: true},
 	}
 }
-func (f *fakeCheck) Collect(context.Context, time.Time) ([]result.Collection, error) {
+func (f *fakeCheck) Collect(context.Context, func() time.Time) ([]result.Collection, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.collections, f.err

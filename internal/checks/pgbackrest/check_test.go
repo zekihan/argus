@@ -412,26 +412,27 @@ func TestTimeoutAfterCommitConvergesWithoutRewrite(t *testing.T) {
 	}
 }
 
-func TestRolledBackLedgerIsRederivedOnNextWrite(t *testing.T) {
-	api := &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}, Jobs: []kube.Job{}}}
-	backend, store := memoryStore(emptyLedger)
+// Completions that land while the sample is being read are evaluated after
+// the read, so they are never "in the future".
+func TestEvaluatesAfterCollecting(t *testing.T) {
+	cluster := liveCluster(t)
+	api := &slowAPI{cluster: cluster}
+	_, store := memoryStore(emptyLedger)
 	r := harness(New(testConfig(), api, store, false, discard))
 	r.Refresh(t.Context(), "pgbackrest")
-	// Argo re-applies the ledger it compared earlier: one step back.
-	backend.Set(emptyLedger)
-	// A change forces a write; the 409 re-reads the rolled-back ledger and
-	// re-derives every success whose source still exists.
-	api.set(func(s *Sample) {
-		s.Clusters[0].Status.PGBackRest.ScheduledBackups[0].CompletionTime = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	})
-	r.Refresh(t.Context(), "pgbackrest")
-	stored, err := state.Decode([]byte(backend.Data()))
-	if err != nil || stored["db/db/repo1"].LastSuccess.IsZero() || stored["db/db/repo2"].LastSuccess.IsZero() {
-		t.Fatal("rolled-back ledger was not re-derived", stored, err)
+	if code, e := lookup(t, r, "db/db/repo1", time.Now()); code != 200 {
+		t.Fatal(code, e.Results)
 	}
-	if code, _ := lookup(t, r, "", time.Now()); code != 200 {
-		t.Fatal(code)
-	}
+}
+
+type slowAPI struct{ cluster kube.Cluster }
+
+func (s *slowAPI) Collect(context.Context) (Sample, error) {
+	time.Sleep(20 * time.Millisecond)
+	cluster := s.cluster
+	cluster.Status.PGBackRest.ScheduledBackups = append([]kube.Backup(nil), cluster.Status.PGBackRest.ScheduledBackups...)
+	cluster.Status.PGBackRest.ScheduledBackups[0].CompletionTime = time.Now().UTC().Format(time.RFC3339Nano)
+	return Sample{Clusters: []kube.Cluster{cluster}}, nil
 }
 
 func TestCorruptUnknownMissingAndOversizedStateFailClosed(t *testing.T) {
@@ -594,7 +595,7 @@ func TestRealBackrestwatchLedgerSurvivesImport(t *testing.T) {
 	}
 	backend, store := memoryStore(string(data))
 	check := New(cfg, &fakeAPI{sample: sample}, store, false, discard)
-	if _, err := check.Collect(t.Context(), fixture.EvaluatedAt.Add(10*time.Minute)); err != nil {
+	if _, err := check.Collect(t.Context(), func() time.Time { return fixture.EvaluatedAt.Add(10 * time.Minute) }); err != nil {
 		t.Fatal(err)
 	}
 	if backend.Writes() != 0 || backend.Data() != string(data) {

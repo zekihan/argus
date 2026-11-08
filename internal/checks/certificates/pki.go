@@ -77,11 +77,13 @@ func (p *PKI) profile() Profile {
 		LeafDays: p.config.LeafDays, MarginDays: p.config.MarginDays}
 }
 
-func (p *PKI) Collect(ctx context.Context, now time.Time) ([]result.Collection, error) {
+func (p *PKI) Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error) {
 	sample, err := p.api.Collect(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// Evaluate after reading: objects updated during the read are not "future".
+	now := clock()
 	return []result.Collection{p.Evaluate(sample, now)}, nil
 }
 

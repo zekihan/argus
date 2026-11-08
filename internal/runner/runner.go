@@ -23,7 +23,9 @@ type Check interface {
 	// Describe returns the static route families with their configured
 	// inventory targets, served before the first sample completes.
 	Describe() []result.Collection
-	Collect(ctx context.Context, now time.Time) ([]result.Collection, error)
+	// Collect reads and evaluates one sample. clock gives the evaluation
+	// time; checks call it after their API reads.
+	Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error)
 }
 
 // Failure is a collection failure with a fixed reason code.
@@ -134,7 +136,7 @@ func (r *Runner) refreshEntry(ctx context.Context, e *entry) {
 	ctx, cancel := context.WithTimeout(ctx, e.timing.Timeout)
 	defer cancel()
 	now := time.Now()
-	collections, err := e.check.Collect(ctx, now)
+	collections, err := e.check.Collect(ctx, time.Now)
 	e.mu.Lock()
 	e.attemptedAt = time.Now()
 	if err != nil {

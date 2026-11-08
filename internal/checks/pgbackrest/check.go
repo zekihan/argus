@@ -157,7 +157,7 @@ func stateCode(err error) string {
 	}
 }
 
-func (c *Check) Collect(ctx context.Context, now time.Time) ([]result.Collection, error) {
+func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error) {
 	if !c.loaded {
 		ledger, err := c.store.Load(ctx)
 		if err != nil {
@@ -172,6 +172,9 @@ func (c *Check) Collect(ctx context.Context, now time.Time) ([]result.Collection
 	if err != nil {
 		return nil, err
 	}
+	// As in backrestwatch, evaluate after collecting: completions observed
+	// during the read are not in the future.
+	now := clock()
 	results, next, err := Evaluate(c.config, sample, c.ledger, now)
 	if err != nil {
 		if next != nil {
