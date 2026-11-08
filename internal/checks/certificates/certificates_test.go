@@ -471,3 +471,21 @@ func TestExpectedCertificateUnderAnExcludedIssuerIsReported(t *testing.T) {
 		t.Fatal("expected certificate hidden by issuer exclusion", code, e.Results)
 	}
 }
+
+// certificate_monitor.py rejects anything but exactly one PEM certificate,
+// even when the first block has the pinned fingerprint.
+func TestRootPinRequiresExactlyOneCertificate(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	for name, public := range map[string]string{
+		"bundle":       publicFixture + rootPEM(t, key),
+		"leading text": "subject=CN example\n" + publicFixture,
+		"trailing key": publicFixture + "-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n",
+	} {
+		s := pkiHealthy(t)
+		s.Requests[0] = decode[CertificateRequest](t, requestJSON(public))
+		ok, h := pkiVerdict(t, pkiConfig(), s)
+		if _, e := h.Get(t, PKIRoute); ok || e.Results["root_pin"] != "root_certificate_invalid" {
+			t.Fatal(name, e.Results)
+		}
+	}
+}

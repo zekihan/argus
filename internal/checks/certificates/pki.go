@@ -1,6 +1,7 @@
 package certificates
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
@@ -146,19 +147,18 @@ func (p *PKI) rootPin(root Certificate, requests []CertificateRequest, values ma
 }
 
 // publicIdentity returns the SHA-256 of a PEM certificate's DER encoding and
-// of its SubjectPublicKeyInfo. The SPKI requires exactly one parseable public
-// certificate and no private key material.
+// of its SubjectPublicKeyInfo. The data must be exactly one CERTIFICATE block
+// and nothing else, as certificate_monitor.py requires: a bundle, leading
+// text or private key material fails. The SPKI additionally requires a
+// parseable certificate.
 func publicIdentity(data []byte) (fingerprint, spki string, err error) {
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return "", "", fmt.Errorf("not a PEM certificate")
+	block, rest := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 ||
+		!bytes.HasPrefix(bytes.TrimSpace(data), []byte("-----BEGIN CERTIFICATE-----")) || len(bytes.TrimSpace(rest)) != 0 {
+		return "", "", fmt.Errorf("exactly one public certificate required")
 	}
 	sum := sha256.Sum256(block.Bytes)
 	fingerprint = hex.EncodeToString(sum[:])
-	text := string(data)
-	if strings.Count(text, "-----BEGIN CERTIFICATE-----") != 1 || strings.Contains(text, "PRIVATE KEY") {
-		return fingerprint, "", fmt.Errorf("exactly one public certificate required")
-	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		return fingerprint, "", fmt.Errorf("invalid certificate")
