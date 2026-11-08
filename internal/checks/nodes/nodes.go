@@ -278,9 +278,9 @@ func (c *Check) longhornDisk(l LonghornNode, values map[string]any) string {
 	if !kube.ConditionTrue(l.Status.Conditions, "Ready") {
 		return result.Reason("node_not_ready")
 	}
-	if !kube.ConditionTrue(l.Status.Conditions, "Schedulable") {
-		return result.Reason("node_not_schedulable")
-	}
+	// The Longhorn node's Schedulable condition turns False as soon as the
+	// Kubernetes node is cordoned; cordons are judged by schedulable, with
+	// its drain window, so only disk readiness and space are checked here.
 	names := make([]string, 0, len(l.Status.DiskStatus))
 	for name := range l.Status.DiskStatus {
 		names = append(names, name)

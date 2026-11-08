@@ -142,6 +142,20 @@ func TestCordonAndSkewFailOnlyAfterPersisting(t *testing.T) {
 	}
 }
 
+// A cordon for a rolling drain makes Longhorn mark the node unschedulable at
+// once; that must not page before the cordon window does.
+func TestCordonedLonghornNodeDoesNotFailItsDisks(t *testing.T) {
+	check := New(cfg(), nil)
+	s := healthy(t)
+	s.Nodes[0].Spec.Unschedulable = true
+	s.Longhorn[0].Status.Conditions[1].Status = "False"
+	s.Longhorn[0].Status.Conditions[1].Reason = "KubernetesNodeCordoned"
+	results := evaluate(t, check, s, now, "agent")
+	if results["longhorn_disk"] != "ok" || results["schedulable"] != "ok" {
+		t.Fatal(results)
+	}
+}
+
 func TestUsageAndLonghornDisks(t *testing.T) {
 	check := New(cfg(), nil)
 	s := healthy(t)
