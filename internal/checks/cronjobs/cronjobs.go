@@ -21,7 +21,8 @@ var dimensions = []string{"schedule", "last_success", "last_run", "active", "fai
 type CronJob struct {
 	Metadata kube.Metadata `json:"metadata"`
 	Spec     struct {
-		Suspend *bool `json:"suspend"`
+		Suspend                *bool `json:"suspend"`
+		FailedJobsHistoryLimit *int  `json:"failedJobsHistoryLimit"`
 	} `json:"spec"`
 	Status struct {
 		LastSuccessfulTime *string `json:"lastSuccessfulTime"`
@@ -186,6 +187,16 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 		}
 		sort.SliceStable(jobs, func(i, j int) bool { return created(jobs[i]).After(created(jobs[j])) })
 		evaluateRuns(jobs, item, now, results, values)
+		// Kubernetes keeps one failed Job by default; when it cannot retain
+		// enough failures to reach the threshold, failures cannot be judged.
+		history := 1
+		if cron.Spec.FailedJobsHistoryLimit != nil {
+			history = *cron.Spec.FailedJobsHistoryLimit
+		}
+		values["failedJobsHistoryLimit"] = history
+		if history <= item.MaxConsecutiveFailures {
+			results["failures"] = result.NA
+		}
 		collection.Items = append(collection.Items, result.Item{Target: item.Key(), Results: result.Set(dimensions, results), Values: values})
 	}
 	collection.Results = map[string]string{"inventory": result.Inventory(missing, nil)}

@@ -107,7 +107,7 @@ func job(t *testing.T, name, created, start, completion, condition string) Job {
 }
 
 func TestRunHistoryDetailDoesNotAffectParity(t *testing.T) {
-	c := cron(t, "a", "b", `{"status":{"lastSuccessfulTime":"2026-11-05T23:00:00Z"}}`)
+	c := cron(t, "a", "b", `{"spec":{"failedJobsHistoryLimit":5},"status":{"lastSuccessfulTime":"2026-11-05T23:00:00Z"}}`)
 	healthy := cron(t, "a", "c", `{"status":{"lastSuccessfulTime":"2026-11-05T23:00:00Z"}}`)
 	healthy.Metadata.UID = "other"
 	cfg := config.CronJobs{Items: []config.CronJob{
@@ -186,5 +186,24 @@ func TestEvaluatesAfterCollecting(t *testing.T) {
 	h := checktest.New(New(inventory("a", "b", 10800), slowAPI{}), time.Time{}).Refresh(t)
 	if code, e := h.Get(t, Route+"/a/b"); code != 200 {
 		t.Fatal("a success recorded during collection was judged future", e.Results)
+	}
+}
+
+// With Kubernetes' default failedJobsHistoryLimit of 1, consecutive failures
+// above the threshold can never be retained, so the dimension does not apply.
+func TestFailuresNeedEnoughFailedJobHistory(t *testing.T) {
+	jobs := []Job{
+		job(t, "b-2", "2026-11-05T23:40:00Z", "2026-11-05T23:40:00Z", "", "Failed"),
+		job(t, "b-1", "2026-11-05T23:30:00Z", "2026-11-05T23:30:00Z", "", "Failed"),
+	}
+	for body, want := range map[string]string{
+		`{"status":{"lastSuccessfulTime":"2026-11-05T23:00:00Z"}}`:                                     "n/a",
+		`{"spec":{"failedJobsHistoryLimit":2},"status":{"lastSuccessfulTime":"2026-11-05T23:00:00Z"}}`: "n/a",
+		`{"spec":{"failedJobsHistoryLimit":3},"status":{"lastSuccessfulTime":"2026-11-05T23:00:00Z"}}`: "ok",
+	} {
+		h := checktest.New(New(inventory("a", "b", 10800), &fakeAPI{sample: Sample{CronJobs: []CronJob{cron(t, "a", "b", body)}, Jobs: jobs}}), now).Refresh(t)
+		if _, e := h.Get(t, Route+"/a/b"); e.Results["failures"] != want {
+			t.Fatal(body, e.Results)
+		}
 	}
 }

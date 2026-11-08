@@ -91,6 +91,8 @@ checks:
     systemBackupGraceSeconds: 3600
   cronjobs:
     enabled: false
+    # The failures dimension needs the CronJob's failedJobsHistoryLimit to
+    # exceed maxConsecutiveFailures (default 2); otherwise it is n/a.
     # - {namespace: app, name: app-job, maxAgeSeconds: 10800}
     items: []
   certificates:
