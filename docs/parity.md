@@ -74,7 +74,7 @@ unchanged (no new `NotBefore`, no lost success). Re-run that test with the real
 | `test_changed_root_is_not_silently_trusted` | 503 | `TestChangedRootIsNotSilentlyTrusted`, `root_pin` |
 | `test_same_key_renewal_is_accepted_only_with_the_pinned_public_key` | 503 / 200 / 503 | `TestSameKeyRenewalIsAcceptedOnlyWithThePinnedPublicKey`, `root_pin` |
 | `test_expected_bundles_must_be_synced_at_their_generation` | missing / not synced / stale generation → 503 | `TestExpectedBundlesMustBeSyncedAtTheirGeneration`, `bundles` |
-| `test_refresh_lists_bundles_only_when_expected` | bundles listed only when expected | `TestBundlesAreListedOnlyWhenExpected`; RBAC for bundles only when expected (`tests/helm`) |
+| `test_refresh_lists_bundles_only_when_expected` | bundles listed only when expected | `TestBundlesAreListedOnlyWhenExpected`; RBAC for bundles only when expected (`tests/helm` `test_bundle_rbac_only_when_bundles_are_expected`) |
 | `test_wrong_owner_revision_missing_or_ambiguous_request_fails` | 503 | `TestWrongOwnerRevisionMissingOrAmbiguousRequestFails`, `root_pin` |
 | `test_inventory_and_lifetime_and_key_pin_fail_closed` | 503 | `TestInventoryAndLifetimeAndKeyPinFailClosed`: `issuer_present`, `inventory`, `issuer_lifetime`, `ca_key_pinned`, `readiness_generation` |
 | `test_api_error_does_not_expose_response_or_keep_cached_green` | 503, no body, stale → 503 | `TestAPIErrorDoesNotExposeResponseOrKeepCachedGreen`, `collection`; staleness in `internal/runner` |

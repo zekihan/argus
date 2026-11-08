@@ -188,6 +188,14 @@ class ChartTests(unittest.TestCase):
         self.assertEqual({p for p in everything if p[3] == "configmaps"}, {("Role", "argus", "", "configmaps", "get"), ("Role", "argus", "", "configmaps", "update")})
         self.assertTrue({p for p in everything if p[3] == "configmaps"} <= only["pgbackrest"])
 
+    def test_bundle_rbac_only_when_bundles_are_expected(self):
+        values = all_checks_values()
+        self.assertTrue(any(p[2] == "trust.cert-manager.io" for p in permissions(render_values(values))))
+        values["checks"]["pki"]["expectedBundles"] = []
+        docs = render_values(values)
+        self.assertFalse(any(p[2] == "trust.cert-manager.io" for p in permissions(docs)))
+        self.assertTrue(any(p[3] == "certificaterequests" for p in permissions(docs)))
+
     def test_state_configmap_is_created_once_and_kept(self):
         docs = render()
         state = next(d for d in kind(docs, "ConfigMap") if d["metadata"]["name"] == "argus-state")
