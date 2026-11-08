@@ -162,3 +162,14 @@ func TestSectionValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestHostProbesMustFitTheCollectionTimeout(t *testing.T) {
+	hosts := `[{"name":"a","address":"192.0.2.1"},{"name":"b","address":"192.0.2.2"},{"name":"c","address":"192.0.2.3"}]`
+	base := `{"checks":{"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":` + hosts
+	if _, err := Parse([]byte(base + `,"concurrency":2,"timeoutSeconds":20,"collectionTimeoutSeconds":40,"maxSampleAgeSeconds":300}}}`)); err != nil {
+		t.Fatal("two batches of 20s fit 40s", err)
+	}
+	if _, err := Parse([]byte(base + `,"concurrency":2,"timeoutSeconds":21,"collectionTimeoutSeconds":40,"maxSampleAgeSeconds":300}}}`)); err == nil {
+		t.Fatal("two batches of 21s accepted within 40s")
+	}
+}

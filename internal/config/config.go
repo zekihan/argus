@@ -335,6 +335,15 @@ func (c Config) Validate() error {
 		if err := check.validate(); err != nil {
 			return fmt.Errorf("checks.%s: %w", check.Name, err)
 		}
+		if h := c.Checks.Hosts; check.Name == "hosts" {
+			// Hosts are probed in batches of concurrency, each bounded by
+			// timeoutSeconds; every batch must fit the collection timeout, or
+			// healthy hosts late in the queue would report timeouts.
+			batches := (len(h.Hosts) + h.Concurrency - 1) / h.Concurrency
+			if batches*h.TimeoutSeconds > timeout {
+				return fmt.Errorf("checks.hosts: %d batches of %d hosts at timeoutSeconds %d exceed collectionTimeoutSeconds %d", batches, h.Concurrency, h.TimeoutSeconds, timeout)
+			}
+		}
 	}
 	return nil
 }
