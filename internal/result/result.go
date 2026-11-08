@@ -312,6 +312,10 @@ func (c Collection) Aggregate(status string, observedAt, now time.Time) Envelope
 	}
 	if status != Pending {
 		for _, dim := range c.Dimensions {
+			if _, preset := c.Results[dim]; preset {
+				// The collection reported this dimension itself.
+				continue
+			}
 			targets := failing[dim]
 			if len(targets) == 0 {
 				results[dim] = OK

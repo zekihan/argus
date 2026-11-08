@@ -225,11 +225,40 @@ func (e *entry) status(now time.Time) (string, time.Time) {
 	return result.OK, e.sampledAt
 }
 
-func (e *entry) current() []result.Collection {
-	if e.collections != nil {
-		return e.collections
+// collection returns the published collection for a described route. Before
+// the first sample every dimension is pending; a route a published sample
+// omitted is missing. Neither ever renders a dimension as ok.
+func (e *entry) collection(d result.Collection) result.Collection {
+	if e.collections == nil {
+		return unsampled(d, result.Pending, false)
 	}
-	return e.described
+	if c, ok := findCollection(e.collections, d.Route); ok {
+		return c
+	}
+	return unsampled(d, result.Reason("missing"), true)
+}
+
+func unsampled(d result.Collection, value string, missing bool) result.Collection {
+	c := d
+	c.Results = map[string]string{"inventory": value}
+	if missing {
+		c.Results["collection"] = value
+	}
+	c.Items = make([]result.Item, len(d.Items))
+	for i, item := range d.Items {
+		results := map[string]string{}
+		for _, dim := range d.Dimensions {
+			results[dim] = value
+		}
+		if missing {
+			results["collection"] = value
+		}
+		c.Items[i] = result.Item{Target: item.Target, Results: results, Values: map[string]any{}}
+	}
+	for _, dim := range d.Dimensions {
+		c.Results[dim] = value
+	}
+	return c
 }
 
 func findCollection(collections []result.Collection, route string) (result.Collection, bool) {
@@ -261,10 +290,7 @@ func (r *Runner) lookupEntry(e *entry, path string, now time.Time) (int, any, bo
 	described := append([]result.Collection(nil), e.described...)
 	sort.Slice(described, func(i, j int) bool { return len(described[i].Route) > len(described[j].Route) })
 	for _, d := range described {
-		c, ok := findCollection(e.current(), d.Route)
-		if !ok {
-			c = d
-		}
+		c := e.collection(d)
 		if path == d.Route {
 			envelope := c.Aggregate(status, sampled, now)
 			return httpStatus(envelope.Healthy), envelope, true
@@ -323,10 +349,7 @@ func (r *Runner) Index(now time.Time) (int, Index) {
 			stalled = append(stalled, e.check.Name())
 		}
 		for _, d := range e.described {
-			c, ok := findCollection(e.current(), d.Route)
-			if !ok {
-				c = d
-			}
+			c := e.collection(d)
 			aggregate := c.Aggregate(status, sampled, now)
 			routes["/v1/"+c.Route] = aggregate.Summary
 			if !aggregate.Healthy {
@@ -387,11 +410,7 @@ func (r *Runner) Envelopes(name string, now time.Time) []result.Envelope {
 		e.mu.RLock()
 		status, sampled := e.status(now)
 		for _, d := range e.described {
-			c, ok := findCollection(e.current(), d.Route)
-			if !ok {
-				c = d
-			}
-			out = append(out, c.Aggregate(status, sampled, now))
+			out = append(out, e.collection(d).Aggregate(status, sampled, now))
 		}
 		e.mu.RUnlock()
 	}

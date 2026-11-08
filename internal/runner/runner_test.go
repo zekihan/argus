@@ -112,6 +112,37 @@ func TestExpectedItemMissingFromAPublishedSampleFailsClosed(t *testing.T) {
 	}
 }
 
+// Before any sample, and for a route a sample omitted, no dimension reads ok:
+// a consumer conditioned on one dimension must not see green.
+func TestUnsampledAndOmittedCollectionsNeverReadOK(t *testing.T) {
+	check := &fakeCheck{err: &kube.Error{Code: kube.CodeForbidden, Status: 403}}
+	r, _ := newRunner(check, nil)
+	r.Refresh(t.Context(), "fake")
+	_, body := r.Lookup("things", time.Now())
+	if e := body.(result.Envelope); e.Results["collection"] != "forbidden" || e.Results["ready"] != result.Pending || e.Results["inventory"] != result.Pending {
+		t.Fatal("dimensions read ok before any sample", e.Results)
+	}
+	_, body = r.Lookup("things/ns/expected", time.Now())
+	if e := body.(result.Envelope); e.Healthy || e.Results["ready"] != result.Pending {
+		t.Fatal(e.Results)
+	}
+	check.err, check.collections = nil, healthyCollections()[:1]
+	r.Refresh(t.Context(), "fake")
+	code, body := r.Lookup("things/system", time.Now())
+	if e := body.(result.Envelope); code != 503 || e.Results["collection"] != "missing" {
+		t.Fatal("omitted collection served healthy", code, e.Results)
+	}
+	check.collections = []result.Collection{healthyCollections()[1]}
+	r.Refresh(t.Context(), "fake")
+	code, body = r.Lookup("things", time.Now())
+	if e := body.(result.Envelope); code != 503 || e.Results["collection"] != "missing" || e.Results["ready"] != "missing" {
+		t.Fatal("omitted collection served healthy", code, e.Results)
+	}
+	if code, _ := r.Lookup("things/ns/expected", time.Now()); code != 503 {
+		t.Fatal("item of an omitted collection served healthy", code)
+	}
+}
+
 func TestFailedCollectionFailsClosedWithoutLeakingErrors(t *testing.T) {
 	check := &fakeCheck{collections: healthyCollections()}
 	r, logs := newRunner(check, nil)
