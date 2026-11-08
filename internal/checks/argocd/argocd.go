@@ -103,7 +103,7 @@ func (c *Check) Evaluate(apps []Application, now time.Time) result.Collection {
 	for _, app := range apps {
 		present[app.Metadata.Name] = true
 		item := c.application(app, now)
-		if !app.automated() && app.Status.Sync.Status != "Synced" {
+		if !app.automated() && app.Status.Sync.Status == "OutOfSync" {
 			manualOutOfSync++
 		}
 		collection.Items = append(collection.Items, item)
@@ -141,18 +141,22 @@ func (c *Check) application(app Application, now time.Time) result.Item {
 	if automated {
 		window = time.Duration(c.config.AutomatedOutOfSyncSeconds) * time.Second
 	}
-	drifted := app.Status.Sync.Status != "Synced"
+	// Only intentional drift (OutOfSync) gets the window; an Unknown or
+	// missing sync status means Argo CD could not compare, which is never
+	// known to be healthy.
+	drifted := app.Status.Sync.Status == "OutOfSync"
 	since := c.seen.Active(name+"/sync", drifted, now)
-	results["sync"] = result.OK
-	if drifted {
+	switch app.Status.Sync.Status {
+	case "Synced":
+		results["sync"] = result.OK
+	case "OutOfSync":
+		results["sync"] = result.OK
 		values["outOfSyncObservedSeconds"] = since.Seconds()
 		if since > window {
-			code := "out_of_sync"
-			if app.Status.Sync.Status != "OutOfSync" {
-				code = "sync_unknown"
-			}
-			results["sync"] = result.Reason(code, result.Labeled("for", result.Dur(since.Seconds())), result.Labeled("max", result.Dur(window.Seconds())))
+			results["sync"] = result.Reason("out_of_sync", result.Labeled("for", result.Dur(since.Seconds())), result.Labeled("max", result.Dur(window.Seconds())))
 		}
+	default:
+		results["sync"] = result.Reason("sync_unknown")
 	}
 	progressingFor := time.Duration(c.config.ProgressingSeconds) * time.Second
 	switch status := app.Status.Health.Status; status {

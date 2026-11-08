@@ -81,6 +81,16 @@ func TestSyncWindowsDependOnAutomation(t *testing.T) {
 	}
 }
 
+func TestUnknownSyncFailsWithoutAWindow(t *testing.T) {
+	check := New(cfg(), nil)
+	for _, status := range []string{"Unknown", ""} {
+		apps := []Application{app(t, "manual", false, status, "Healthy", "", "Succeeded")}
+		if r := results(t, check, apps, now, "manual"); r["sync"] != "sync_unknown" {
+			t.Fatal(status, r)
+		}
+	}
+}
+
 func TestHealthAndOperation(t *testing.T) {
 	check := New(cfg(), nil)
 	for _, tc := range []struct {
