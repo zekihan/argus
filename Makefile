@@ -26,6 +26,7 @@ container-test:
 chart-test: build
 	$(HELM) lint --strict charts/argus -f charts/argus/ci/default-values.yaml
 	$(HELM) lint --strict charts/argus -f charts/argus/ci/all-checks-values.yaml
+	$(HELM) lint --strict charts/argus -f charts/argus/ci/full-config-values.yaml
 	HELM=$(HELM) $(PYTHON) tests/helm/test_chart.py
 chart-package: chart-test
 	mkdir -p dist/charts

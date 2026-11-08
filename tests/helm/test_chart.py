@@ -13,6 +13,7 @@ CHART = ROOT / "charts/argus"
 HELM = os.environ.get("HELM", "helm")
 DEFAULTS = CHART / "ci/default-values.yaml"
 ALL_CHECKS = CHART / "ci/all-checks-values.yaml"
+FULL_CONFIG = CHART / "ci/full-config-values.yaml"
 CHECKS = ["hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd"]
 
 
@@ -111,6 +112,18 @@ class ChartTests(unittest.TestCase):
         check_config(config)
         known_hosts = next(d for d in kind(docs, "ConfigMap") if "config.json" in d["data"])["data"]["known_hosts"]
         self.assertIn("ssh-ed25519", known_hosts)
+
+    def test_full_config_passes_every_field_through(self):
+        values = yaml.safe_load(FULL_CONFIG.read_text())
+        config = config_of(render(values=FULL_CONFIG))
+        check_config(config)
+        for key, value in values["config"].items():
+            self.assertEqual(config[key], value)
+        for name, section in values["checks"].items():
+            expected = {k: v for k, v in section.items() if k != "enabled"}
+            if name == "hosts":
+                expected.update(privateKeyFile="/var/run/argus-ssh/ssh_private_key", knownHostsFile="/config/known_hosts")
+            self.assertEqual(config["checks"][name], expected, name)
 
     def test_rbac_matches_the_design(self):
         docs = render(values=ALL_CHECKS)

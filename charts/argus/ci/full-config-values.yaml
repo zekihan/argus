@@ -1,0 +1,194 @@
+# Every configuration field set (JSON is valid YAML). The released-chart check
+# renders this from each released chart, and a Go test fails when a config
+# field is missing here.
+{
+  "accessControl": {
+    "existingSecret": "chart-validation-only"
+  },
+  "tls": {
+    "existingSecret": "chart-validation-only"
+  },
+  "ssh": {
+    "existingSecret": "argus-ssh",
+    "knownHosts": "192.0.2.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyExampleOnlyExampleOnlyExample\n"
+  },
+  "config": {
+    "pollIntervalSeconds": 60,
+    "maxSampleAgeSeconds": 180,
+    "requestTimeoutSeconds": 10,
+    "collectionTimeoutSeconds": 45
+  },
+  "checks": {
+    "hosts": {
+      "enabled": true,
+      "user": "argus",
+      "timeoutSeconds": 20,
+      "concurrency": 4,
+      "intervalSeconds": 600,
+      "collectionTimeoutSeconds": 120,
+      "maxSampleAgeSeconds": 1500,
+      "hosts": [
+        {
+          "name": "nas",
+          "address": "192.0.2.10:22",
+          "expects": [
+            "zfs",
+            "ups"
+          ]
+        }
+      ]
+    },
+    "nodes": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "expected": [
+        "node-a"
+      ],
+      "persistSeconds": 7200,
+      "metrics": true,
+      "cpuPercent": 90,
+      "memoryPercent": 90,
+      "longhornNamespace": "longhorn-system",
+      "longhornMinAvailablePercent": 10
+    },
+    "postgres": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "clusters": [
+        {
+          "namespace": "database",
+          "name": "database"
+        }
+      ]
+    },
+    "pgbackrest": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "maxAgeSeconds": 28800,
+      "clusters": [
+        {
+          "namespace": "database",
+          "name": "database",
+          "repos": {
+            "repo1": {
+              "maxAgeSeconds": 36000
+            }
+          }
+        }
+      ]
+    },
+    "longhorn": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "namespace": "longhorn-system",
+      "expectedPVCs": [
+        "app/data"
+      ],
+      "backupGroup": "backup",
+      "maxBackupAgeSeconds": 108000,
+      "systemBackupMaxAgeSeconds": 691200,
+      "systemBackupGraceSeconds": 3600
+    },
+    "cronjobs": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "items": [
+        {
+          "namespace": "app",
+          "name": "app-sync",
+          "maxAgeSeconds": 10800,
+          "maxRunSeconds": 3600,
+          "maxConsecutiveFailures": 2
+        }
+      ]
+    },
+    "certificates": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "expected": [
+        {
+          "namespace": "web",
+          "name": "site"
+        }
+      ],
+      "excludeIssuers": [
+        "selfsigned-ca-issuer"
+      ],
+      "notReadySeconds": 3600,
+      "renewalOverdueSeconds": 86400,
+      "expiryDays": 14
+    },
+    "pki": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "rootNamespace": "cert-manager",
+      "rootName": "selfsigned-ca",
+      "issuerName": "selfsigned-ca-issuer",
+      "rootSHA256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "rootSPKI": "1111111111111111111111111111111111111111111111111111111111111111",
+      "expectedCertificates": [
+        {
+          "namespace": "cert-manager",
+          "name": "selfsigned-ca"
+        }
+      ],
+      "expectedBundles": [
+        "example-ca"
+      ],
+      "leafDays": 90,
+      "marginDays": 90
+    },
+    "externalsecrets": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "expectedExternalSecrets": [
+        {
+          "namespace": "app",
+          "name": "app"
+        }
+      ],
+      "expectedClusterExternalSecrets": [
+        "shared"
+      ],
+      "expectedSecretStores": [
+        {
+          "namespace": "app",
+          "name": "store"
+        }
+      ],
+      "expectedClusterSecretStores": [
+        "cluster-store"
+      ],
+      "refreshGraceSeconds": 600
+    },
+    "argocd": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "namespace": "argocd",
+      "expected": [
+        "app"
+      ],
+      "automatedOutOfSyncSeconds": 900,
+      "manualOutOfSyncSeconds": 604800,
+      "progressingSeconds": 900
+    }
+  }
+}
