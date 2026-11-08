@@ -53,7 +53,7 @@ backrestwatch's Go tests moved with the code. `Evaluate` and
 
 New for the ConfigMap ledger: `TestConflictAdoptsStoredLedgerAndRewrites`
 (409), `TestTimeoutAfterCommitConvergesWithoutRewrite` (timeout then
-read-back), `TestRolledBackLedgerIsRederivedOnNextWrite` (ledger changed
+read-back), `TestRolledBackLedgerIsRederivedOnNextPoll` (ledger changed
 underneath), `TestCorruptUnknownMissingAndOversizedStateFailClosed` (corrupt,
 unknown version, oversized, missing), `TestLedgerOverSizeLimitIsNotWritten`, the same cases through the real
 ConfigMap backend against a fake API server (`TestConfigMapBackendConvergence`,

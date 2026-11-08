@@ -158,15 +158,26 @@ func stateCode(err error) string {
 }
 
 func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error) {
-	if !c.loaded {
-		ledger, err := c.store.Load(ctx)
-		if err != nil {
-			// A corrupt or unknown document fails closed and is never overwritten:
-			// nothing is evaluated or written until a read succeeds.
-			c.logger.Error("pgBackRest ledger unavailable", "code", stateCode(err))
-			return c.render(stateCode(err)), nil
+	// Read the stored ledger on every sample, so a ledger rolled back by Argo
+	// CD's compare-then-apply, or repaired by an operator, converges on the
+	// next poll rather than at the next write.
+	stored, err := c.store.Load(ctx)
+	if err != nil {
+		code := stateCode(err)
+		if errors.Is(err, state.ErrInvalid) || errors.Is(err, state.ErrMissing) {
+			// A corrupt or unknown document fails closed and is never
+			// overwritten: nothing is evaluated or written until a read succeeds.
+			c.loaded, c.ledger, c.persisted = false, nil, nil
 		}
-		c.ledger, c.persisted, c.loaded = ledger, ledger, true
+		c.logger.Error("pgBackRest ledger unavailable", "code", code)
+		return c.render(code), nil
+	}
+	switch {
+	case !c.loaded:
+		c.ledger, c.persisted, c.loaded = stored, stored, true
+	case !state.Equal(stored, c.persisted):
+		c.persisted = stored
+		c.ledger = adopt(stored, c.ledger)
 	}
 	sample, err := c.api.Collect(ctx)
 	if err != nil {

@@ -412,6 +412,31 @@ func TestTimeoutAfterCommitConvergesWithoutRewrite(t *testing.T) {
 	}
 }
 
+func TestRolledBackLedgerIsRederivedOnNextPoll(t *testing.T) {
+	api := &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}, Jobs: []kube.Job{}}}
+	backend, store := memoryStore(emptyLedger)
+	r := harness(New(testConfig(), api, store, false, discard))
+	r.Refresh(t.Context(), "pgbackrest")
+	written := backend.Writes()
+	// Argo re-applies the ledger it compared earlier: one step back. The next
+	// poll re-reads it, adopts it and re-derives every success whose source
+	// still exists, with no change in the sample.
+	backend.Set(emptyLedger)
+	r.Refresh(t.Context(), "pgbackrest")
+	stored, err := state.Decode([]byte(backend.Data()))
+	if err != nil || stored["db/db/repo1"].LastSuccess.IsZero() || stored["db/db/repo2"].LastSuccess.IsZero() || backend.Writes() != written+1 {
+		t.Fatal("rolled-back ledger was not re-derived", stored, err, backend.Writes())
+	}
+	// An unchanged ledger is not rewritten.
+	r.Refresh(t.Context(), "pgbackrest")
+	if backend.Writes() != written+1 {
+		t.Fatal("unchanged ledger rewritten")
+	}
+	if code, _ := lookup(t, r, "", time.Now()); code != 200 {
+		t.Fatal(code)
+	}
+}
+
 // Completions that land while the sample is being read are evaluated after
 // the read, so they are never "in the future".
 func TestEvaluatesAfterCollecting(t *testing.T) {
