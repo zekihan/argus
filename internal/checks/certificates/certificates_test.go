@@ -489,3 +489,23 @@ func TestRootPinRequiresExactlyOneCertificate(t *testing.T) {
 		}
 	}
 }
+
+func TestExpectedPKICertificatesHaveRoutes(t *testing.T) {
+	c := pkiConfig()
+	c.ExpectedCertificates = append(c.ExpectedCertificates, config.NamespacedName{Namespace: "db", Name: "gone"}, config.NamespacedName{Namespace: "web", Name: "other"})
+	other := decode[Certificate](t, siteJSON)
+	other.Metadata.Name = "other"
+	s := pkiHealthy(t)
+	s.Certificates = append(s.Certificates, other)
+	h := checktest.New(NewPKI(c, &pkiAPI{sample: s}), monitorNow)
+	if code, _ := h.Get(t, PKIRoute+"/db/gone"); code != 503 {
+		t.Fatal("expected certificate has no route before the first sample", code)
+	}
+	h.Refresh(t)
+	if code, e := h.Get(t, PKIRoute+"/db/gone"); code != 503 || e.Results["ready"] != "missing" {
+		t.Fatal(code, e.Results)
+	}
+	if code, e := h.Get(t, PKIRoute+"/web/other"); code != 200 || e.Results["ready"] != "n/a" {
+		t.Fatal("an expected certificate outside the shared CA is only checked for existence", code, e.Results)
+	}
+}

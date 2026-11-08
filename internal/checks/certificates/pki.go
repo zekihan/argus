@@ -70,7 +70,11 @@ func NewPKI(c config.PKI, api PKICollector) *PKI { return &PKI{config: c, api: a
 func (p *PKI) Name() string { return "pki" }
 
 func (p *PKI) Describe() []result.Collection {
-	return []result.Collection{{Route: PKIRoute, Check: "pki/certificate", Dimensions: pkiDimensions}}
+	collection := result.Collection{Route: PKIRoute, Check: "pki/certificate", Dimensions: pkiDimensions}
+	for _, expected := range p.config.ExpectedCertificates {
+		collection.Items = append(collection.Items, result.Item{Target: expected.Key()})
+	}
+	return []result.Collection{collection}
 }
 
 func (p *PKI) profile() Profile {
@@ -99,11 +103,28 @@ func (p *PKI) Evaluate(s PKISample, now time.Time) result.Collection {
 	for _, cert := range s.Certificates {
 		existing[cert.key()] = cert
 	}
+	assessed := map[string]bool{}
+	for _, item := range collection.Items {
+		assessed[item.Target] = true
+	}
 	var missing []string
 	for _, expected := range p.config.ExpectedCertificates {
-		if _, ok := existing[expected.Key()]; !ok {
+		results := map[string]string{}
+		switch _, ok := existing[expected.Key()]; {
+		case !ok:
 			missing = append(missing, expected.Key())
+			results["ready"] = result.Reason("missing")
+		case assessed[expected.Key()]:
+			continue
 		}
+		// Present but not under the shared CA issuer: certificate_monitor.py
+		// checks only its existence.
+		for _, dim := range pkiDimensions {
+			if results[dim] == "" {
+				results[dim] = result.NA
+			}
+		}
+		collection.Items = append(collection.Items, result.Item{Target: expected.Key(), Results: results, Values: map[string]any{}})
 	}
 	collection.Results["inventory"] = result.Inventory(missing, nil)
 	if root, ok := existing[p.config.RootNamespace+"/"+p.config.RootName]; ok {
