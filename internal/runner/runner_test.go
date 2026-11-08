@@ -86,6 +86,17 @@ func TestPendingThenPublishedThenStale(t *testing.T) {
 	}
 }
 
+func TestExpectedItemMissingFromAPublishedSampleFailsClosed(t *testing.T) {
+	collections := healthyCollections()
+	collections[0].Items = collections[0].Items[1:]
+	r, _ := newRunner(&fakeCheck{collections: collections}, nil)
+	r.Refresh(t.Context(), "fake")
+	code, body := r.Lookup("things/ns/expected", time.Now())
+	if envelope := body.(result.Envelope); code != 503 || envelope.Results["ready"] != "missing" || envelope.Healthy {
+		t.Fatal("expected item absent from the sample served healthy", code, envelope)
+	}
+}
+
 func TestFailedCollectionFailsClosedWithoutLeakingErrors(t *testing.T) {
 	check := &fakeCheck{collections: healthyCollections()}
 	r, logs := newRunner(check, nil)

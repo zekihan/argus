@@ -278,6 +278,15 @@ func (r *Runner) lookupEntry(e *entry, path string, now time.Time) (int, any, bo
 			if item, found = d.Find(target); !found {
 				return http.StatusNotFound, map[string]string{"reason": "unknown item"}, true
 			}
+			// An expected item absent from a published sample fails closed;
+			// before the first sample it is simply pending.
+			item.Results = map[string]string{}
+			if e.collections != nil {
+				for _, dim := range d.Dimensions {
+					item.Results[dim] = result.Reason("missing")
+				}
+			}
+			item.Values = map[string]any{}
 		}
 		envelope := c.ItemEnvelope(item, status, sampled, now)
 		return httpStatus(envelope.Healthy), envelope, true

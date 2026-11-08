@@ -95,9 +95,15 @@ func (r *Renewals) Evaluate(s Sample, now time.Time) result.Collection {
 	}
 	collection := result.Collection{Route: Route, Check: "certificate", Dimensions: dimensions}
 	present := map[string]bool{}
+	expectedKeys := map[string]bool{}
+	for _, expected := range r.config.Expected {
+		expectedKeys[expected.Key()] = true
+	}
 	for _, cert := range s.Certificates {
 		present[cert.key()] = true
-		if excluded[cert.Spec.IssuerRef.Name] {
+		// An explicitly expected certificate is reported even under an
+		// excluded issuer.
+		if excluded[cert.Spec.IssuerRef.Name] && !expectedKeys[cert.key()] {
 			continue
 		}
 		collection.Items = append(collection.Items, r.certificate(cert, s.Requests, issuers, now))

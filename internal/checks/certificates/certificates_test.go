@@ -458,3 +458,16 @@ func TestLifecycleProfile(t *testing.T) {
 		t.Fatal("margins not distinct", service[0].Results)
 	}
 }
+
+func TestExpectedCertificateUnderAnExcludedIssuerIsReported(t *testing.T) {
+	c := renewalsConfig()
+	c.Expected = []config.NamespacedName{{Namespace: "cert-manager", Name: "selfsigned-ca"}}
+	root := decode[Certificate](t, rootJSON)
+	root.Spec.IssuerRef.Name = "selfsigned-ca-issuer"
+	root.Status.Conditions[0].Status = "False"
+	root.Status.Conditions[0].LastTransitionTime = "2026-10-01T00:00:00Z"
+	h := checktest.New(NewRenewals(c, &renewalsAPI{sample: Sample{Certificates: []Certificate{root}}}), monitorNow).Refresh(t)
+	if code, e := h.Get(t, Route+"/cert-manager/selfsigned-ca"); code != 503 || !strings.HasPrefix(e.Results["ready"], "not_ready") {
+		t.Fatal("expected certificate hidden by issuer exclusion", code, e.Results)
+	}
+}
