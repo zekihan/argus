@@ -627,3 +627,15 @@ func TestRealBackrestwatchLedgerSurvivesImport(t *testing.T) {
 		t.Fatal("import rewrote the ledger")
 	}
 }
+
+func TestUnreadableLedgerFailsTheCollection(t *testing.T) {
+	backend := state.NewMemory(emptyLedger, true)
+	backend.ReadError = func() error {
+		return &kube.Error{Code: kube.CodeForbidden, Status: 403, Path: "/api/v1/namespaces/argus/configmaps/argus-state"}
+	}
+	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, state.New(backend), false, discard))
+	r.Refresh(t.Context(), "pgbackrest")
+	if code, e := lookup(t, r, "", time.Now()); code != 503 || e.Results["collection"] != "forbidden" {
+		t.Fatal(code, e.Results)
+	}
+}

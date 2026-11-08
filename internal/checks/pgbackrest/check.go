@@ -162,15 +162,17 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 	// CD's compare-then-apply, or repaired by an operator, converges on the
 	// next poll rather than at the next write.
 	stored, err := c.store.Load(ctx)
+	if errors.Is(err, state.ErrInvalid) || errors.Is(err, state.ErrMissing) {
+		// A corrupt or unknown document fails closed and is never overwritten:
+		// nothing is evaluated or written until a read succeeds.
+		c.loaded, c.ledger, c.persisted = false, nil, nil
+		c.logger.Error("pgBackRest ledger unavailable", "code", stateCode(err))
+		return c.render(stateCode(err)), nil
+	}
 	if err != nil {
-		code := stateCode(err)
-		if errors.Is(err, state.ErrInvalid) || errors.Is(err, state.ErrMissing) {
-			// A corrupt or unknown document fails closed and is never
-			// overwritten: nothing is evaluated or written until a read succeeds.
-			c.loaded, c.ledger, c.persisted = false, nil, nil
-		}
-		c.logger.Error("pgBackRest ledger unavailable", "code", code)
-		return c.render(code), nil
+		// An unreadable ConfigMap (403, timeout, outage) fails the collection
+		// like any other API read; pending invalidations stay in memory.
+		return nil, err
 	}
 	switch {
 	case !c.loaded:
