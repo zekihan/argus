@@ -13,9 +13,21 @@ if [ -n "${RELEASED_CHART_ARCHIVE:-}" ]; then
   version=local
   tar -xzf "$RELEASED_CHART_ARCHIVE" -C "$work"
 else
-  version=$(git tag --list 'v*' | sed -n 's/^v\(\(0\|[1-9][0-9]*\)\.\(0\|[1-9][0-9]*\)\.\(0\|[1-9][0-9]*\)\)$/\1/p' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  # A tag run checks the release before its chart is published, so the tag
+  # being released is never the released chart. TAGS overrides git for tests.
+  current=''
+  case "${GITHUB_REF:-}" in
+    refs/tags/v*) current=${GITHUB_REF#refs/tags/v} ;;
+  esac
+  tags=${TAGS-$(git tag --list 'v*')}
+  version=$(printf '%s\n' "$tags" | sed -n 's/^v\(\(0\|[1-9][0-9]*\)\.\(0\|[1-9][0-9]*\)\.\(0\|[1-9][0-9]*\)\)$/\1/p' |
+    grep -vxF "${current:-no-current-release}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || true)
+  if [ -n "${SELECT_ONLY:-}" ]; then
+    printf '%s\n' "$version"
+    exit 0
+  fi
   if [ -z "$version" ]; then
-    echo 'No stable release tag yet; no released chart to check'
+    echo 'No published stable release yet; no released chart to check'
     exit 0
   fi
   # Anonymous pull: the released chart must be publicly readable anyway.
