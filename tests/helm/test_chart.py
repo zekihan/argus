@@ -1,8 +1,10 @@
 import copy
+import http.server
 import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -68,7 +70,83 @@ def permissions(docs):
     return {(k, ns, rule["apiGroups"][0], resource, verb) for k, ns, rule in rules(docs) for resource in rule["resources"] for verb in rule["verbs"]}
 
 
+class RecordingAPI(http.server.BaseHTTPRequestHandler):
+    """A Kubernetes API that answers every read and records what was asked."""
+
+    requests = []
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        RecordingAPI.requests.append(path)
+        if path == "/version":
+            body = {"gitVersion": "v1.0.0"}
+        elif path.endswith("/configmaps/argus-state"):
+            body = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "argus-state", "namespace": "argus", "resourceVersion": "1"},
+                    "data": {"pgbackrest.json": '{"version":2,"entries":{}}'}}
+        else:
+            body = {"metadata": {"resourceVersion": "1"}, "items": []}
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+def granted(docs, path):
+    """Whether the rendered RBAC grants the read the binary made at path."""
+    parts = path.strip("/").split("/")
+    if parts[0] == "api":
+        group, rest = "", parts[2:]
+    else:
+        group, rest = parts[1], parts[3:]
+    namespace = None
+    if rest[0] == "namespaces" and len(rest) > 2:
+        namespace, rest = rest[1], rest[2:]
+    resource = rest[0]
+    name = rest[1] if len(rest) > 1 else None
+    verb = "get" if name else "list"
+    for kind_, role_namespace, rule in rules(docs):
+        if kind_ == "Role" and role_namespace != namespace:
+            continue
+        if group in rule["apiGroups"] and resource in rule["resources"] and verb in rule["verbs"]:
+            if name and rule.get("resourceNames") and name not in rule["resourceNames"]:
+                continue
+            return True
+    return False
+
+
 class ChartTests(unittest.TestCase):
+    def test_rbac_grants_every_read_the_checks_make(self):
+        """Run every Kubernetes check against a recording API with the
+        all-checks configuration, then require each read to be granted by
+        the chart's rendered RBAC as Argus's own service account."""
+        values = all_checks_values()
+        values["networkPolicy"]["enabled"] = False
+        docs = render_values(values)
+        config = config_of(docs)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), RecordingAPI)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        origin = f"http://127.0.0.1:{server.server_port}"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
+            json.dump(config, f)
+            f.flush()
+            for check in CHECKS:
+                if check == "hosts":
+                    continue
+                RecordingAPI.requests = []
+                subprocess.run([str(ROOT / "dist/argus"), "once", "-config", f.name, "-check", check, "-api-url", origin], capture_output=True)
+                paths = [p for p in RecordingAPI.requests if p != "/version"]
+                self.assertTrue(paths, check)
+                for path in paths:
+                    self.assertTrue(granted(docs, path), f"{check} reads {path}, which the chart does not grant")
+
     def test_security_strategy_probes_and_image(self):
         docs = render()
         deployment = kind(docs, "Deployment")[0]

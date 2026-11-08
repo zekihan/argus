@@ -41,7 +41,9 @@ if the original content cannot be recovered.
 
 The first release is expected to fail its anonymous-pull verification, because a
 GHCR package exists only after its first push. Make the `argus` image and chart
-packages public, then use **Re-run failed jobs** (not all jobs).
+packages public, then use **Re-run failed jobs** (not all jobs). After the release completes, run
+`scripts/verify_release.sh X.Y.Z` from a clean checkout: it checks anonymously that both registries
+serve the amd64 and arm64 images and that the published chart renders.
 
 Edge images run against the latest released chart. The PR checks render each
 released chart's `ci/*-values.yaml` and validate the configuration with the new
