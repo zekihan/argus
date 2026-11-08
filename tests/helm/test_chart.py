@@ -263,6 +263,7 @@ class ChartTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, args)
             self.assertIn(message, result.stderr, args)
         for override in ("checks.unknown.enabled=true", "config.unknown=1", "checks.pki.rootSHA256=abc", "image.digest=latest",
+                         "checks.cronjobs.itemz[0].name=x", "checks.hosts.hosts[0].adress=x", "checks.argocd.windowSeconds=1",
                          "checks.pgbackrest.clusters[0].namespace=db", "service.port=0"):
             self.assertNotEqual(run("-f", str(DEFAULTS), "--set", override).returncode, 0, override)
 

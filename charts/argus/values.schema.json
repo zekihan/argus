@@ -136,21 +136,47 @@
       "properties": {
         "hosts": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "user": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 600
+            },
+            "concurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
             },
             "hosts": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": [
-                  "name",
-                  "address"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "name": {
                     "type": "string",
@@ -180,19 +206,39 @@
                       ]
                     }
                   }
-                }
+                },
+                "required": [
+                  "name",
+                  "address"
+                ]
               }
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "nodes": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             },
             "expected": {
               "type": "array",
@@ -202,28 +248,64 @@
                 "maxLength": 253
               }
             },
+            "persistSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "metrics": {
+              "type": "boolean"
+            },
+            "cpuPercent": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "memoryPercent": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
             "longhornNamespace": {
               "type": "string"
+            },
+            "longhornMinAvailablePercent": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "postgres": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             },
             "clusters": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": [
-                  "namespace",
-                  "name"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "namespace": {
                     "type": "string",
@@ -236,19 +318,39 @@
                     "minLength": 1,
                     "maxLength": 253
                   }
-                }
+                },
+                "required": [
+                  "namespace",
+                  "name"
+                ]
               }
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "pgbackrest": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             },
             "maxAgeSeconds": {
               "type": "integer",
@@ -259,11 +361,7 @@
               "type": "array",
               "items": {
                 "type": "object",
-                "required": [
-                  "namespace",
-                  "name",
-                  "repos"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "namespace": {
                     "type": "string",
@@ -284,6 +382,7 @@
                     "patternProperties": {
                       "^repo[1-4]$": {
                         "type": "object",
+                        "additionalProperties": false,
                         "properties": {
                           "maxAgeSeconds": {
                             "type": "integer",
@@ -294,19 +393,40 @@
                       }
                     }
                   }
-                }
+                },
+                "required": [
+                  "namespace",
+                  "name",
+                  "repos"
+                ]
               }
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "longhorn": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             },
             "namespace": {
               "type": "string",
@@ -321,6 +441,12 @@
                 "pattern": "^[^/]+/[^/]+$"
               }
             },
+            "backupGroup": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
             "maxBackupAgeSeconds": {
               "type": "integer",
               "minimum": 1,
@@ -333,28 +459,41 @@
             },
             "systemBackupGraceSeconds": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 31622400
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "cronjobs": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             },
             "items": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": [
-                  "namespace",
-                  "name",
-                  "maxAgeSeconds"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "namespace": {
                     "type": "string",
@@ -380,30 +519,49 @@
                   },
                   "maxConsecutiveFailures": {
                     "type": "integer",
-                    "minimum": 1
+                    "minimum": 1,
+                    "maximum": 1000
                   }
-                }
+                },
+                "required": [
+                  "namespace",
+                  "name",
+                  "maxAgeSeconds"
+                ]
               }
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "certificates": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             },
             "expected": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": [
-                  "namespace",
-                  "name"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "namespace": {
                     "type": "string",
@@ -416,7 +574,11 @@
                     "minLength": 1,
                     "maxLength": 253
                   }
-                }
+                },
+                "required": [
+                  "namespace",
+                  "name"
+                ]
               }
             },
             "excludeIssuers": {
@@ -426,17 +588,64 @@
                 "minLength": 1,
                 "maxLength": 253
               }
+            },
+            "notReadySeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "renewalOverdueSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "expiryDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3650
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "pki": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "rootNamespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "rootName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 253
+            },
+            "issuerName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 253
             },
             "rootSHA256": {
               "type": "string",
@@ -450,10 +659,7 @@
               "type": "array",
               "items": {
                 "type": "object",
-                "required": [
-                  "namespace",
-                  "name"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "namespace": {
                     "type": "string",
@@ -466,7 +672,11 @@
                     "minLength": 1,
                     "maxLength": 253
                   }
-                }
+                },
+                "required": [
+                  "namespace",
+                  "name"
+                ]
               }
             },
             "expectedBundles": {
@@ -476,28 +686,139 @@
                 "minLength": 1,
                 "maxLength": 253
               }
+            },
+            "leafDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3650
+            },
+            "marginDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3650
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "externalsecrets": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "expectedExternalSecrets": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "namespace": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "namespace",
+                  "name"
+                ]
+              }
+            },
+            "expectedClusterExternalSecrets": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253
+              }
+            },
+            "expectedSecretStores": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "namespace": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "namespace",
+                  "name"
+                ]
+              }
+            },
+            "expectedClusterSecretStores": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253
+              }
+            },
+            "refreshGraceSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         },
         "argocd": {
           "type": "object",
-          "required": [
-            "enabled"
-          ],
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "collectionTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "maxSampleAgeSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             },
             "namespace": {
               "type": "string",
@@ -512,8 +833,26 @@
                 "minLength": 1,
                 "maxLength": 253
               }
+            },
+            "automatedOutOfSyncSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "manualOutOfSyncSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
+            },
+            "progressingSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31622400
             }
-          }
+          },
+          "required": [
+            "enabled"
+          ]
         }
       }
     },

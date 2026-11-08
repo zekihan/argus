@@ -123,3 +123,97 @@ func TestFullChartValuesSetEveryConfigField(t *testing.T) {
 		t.Fatalf("charts/argus/ci/full-config-values.yaml does not set: %s", strings.Join(missing, ", "))
 	}
 }
+
+// chartManaged are configuration fields the chart sets itself; they are not
+// chart values.
+var chartManaged = map[string]bool{".checks.hosts.privateKeyFile": true, ".checks.hosts.knownHostsFile": true}
+
+// matchSchema requires every struct in t to be a closed schema object whose
+// properties are exactly the struct's JSON fields, so a typo in a check
+// section fails helm rendering instead of crash-looping the pod.
+func matchSchema(t *testing.T, typ reflect.Type, schema map[string]any, path string, extra map[string]bool) {
+	t.Helper()
+	switch typ.Kind() {
+	case reflect.Pointer:
+		matchSchema(t, typ.Elem(), schema, path, extra)
+	case reflect.Slice:
+		items, ok := schema["items"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: schema has no items", path)
+		}
+		matchSchema(t, typ.Elem(), items, path+"[]", nil)
+	case reflect.Map:
+		patterns, _ := schema["patternProperties"].(map[string]any)
+		if len(patterns) != 1 || schema["additionalProperties"] != false {
+			t.Fatalf("%s: map must be closed with one patternProperties entry", path)
+		}
+		for _, value := range patterns {
+			matchSchema(t, typ.Elem(), value.(map[string]any), path+".*", nil)
+		}
+	case reflect.Struct:
+		if schema["additionalProperties"] != false {
+			t.Fatalf("%s: schema object is not closed", path)
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		want := map[string]reflect.Type{}
+		var collect func(reflect.Type)
+		collect = func(st reflect.Type) {
+			for i := range st.NumField() {
+				f := st.Field(i)
+				if f.Anonymous {
+					collect(f.Type)
+					continue
+				}
+				name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+				if !chartManaged[path+"."+name] {
+					want[name] = f.Type
+				}
+			}
+		}
+		collect(typ)
+		for name := range properties {
+			if _, ok := want[name]; !ok && !extra[name] {
+				t.Errorf("%s.%s: schema property has no configuration field", path, name)
+			}
+		}
+		for name, field := range want {
+			child, ok := properties[name].(map[string]any)
+			if !ok {
+				t.Errorf("%s.%s: configuration field missing from the chart schema", path, name)
+				continue
+			}
+			matchSchema(t, field, child, path+"."+name, nil)
+		}
+	}
+}
+
+func TestChartSchemaClosesEveryCheckSection(t *testing.T) {
+	data, err := os.ReadFile("../../charts/argus/values.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	checks := properties["checks"].(map[string]any)
+	if checks["additionalProperties"] != false {
+		t.Fatal("checks is not closed")
+	}
+	sections := checks["properties"].(map[string]any)
+	typ := reflect.TypeFor[Checks]()
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		section, ok := sections[name].(map[string]any)
+		if !ok {
+			t.Errorf("check %s missing from the chart schema", name)
+			continue
+		}
+		matchSchema(t, f.Type, section, ".checks."+name, map[string]bool{"enabled": true})
+	}
+	if len(sections) != typ.NumField() {
+		t.Errorf("chart schema has %d check sections, configuration has %d", len(sections), typ.NumField())
+	}
+}
