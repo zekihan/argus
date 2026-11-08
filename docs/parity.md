@@ -121,7 +121,7 @@ the CLI exit codes).
 | `test_stale_and_uninitialized_samples` | 503 | `internal/runner` `TestPendingThenPublishedThenStale` |
 | `test_failed_sample_cannot_reuse_healthy_state` | 503, no leak | `TestFailedSampleCannotReuseHealthyState` |
 | `test_http_endpoints` | healthz 200, report 503 before a sample | `internal/server`, `internal/runner` |
-| `PaginationTests` | continuation, token re-read, size and page budgets | `internal/kube` `TestPaginationAndTokenRotation`, `TestPageBudgetAndChangedSnapshot`, `TestOversizedPageIsNotRetried` |
+| `PaginationTests` | continuation, token re-read, page, total-size (32 MiB) and page-count budgets | `internal/kube` `TestPaginationAndTokenRotation`, `TestPageBudgetAndChangedSnapshot`, `TestOversizedPageIsNotRetried`, `TestTotalSizeAndPageCountBudgets` |
 
 ## backup_monitor.py
 

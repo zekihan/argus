@@ -170,6 +170,9 @@ func (c *Client) record(err error) {
 	}
 }
 
+// maxListBytes bounds one list across all of its pages, as sync_monitor.py did.
+const maxListBytes = 32 * 1024 * 1024
+
 // List returns every item of a paginated list from one consistent snapshot.
 func List[T any](ctx context.Context, c *Client, path, selector string) ([]T, error) {
 	query := url.Values{"limit": {"200"}}
@@ -179,10 +182,14 @@ func List[T any](ctx context.Context, c *Client, path, selector string) ([]T, er
 	var items []T
 	seen := map[string]bool{}
 	resourceVersion := ""
+	total := 0
 	for range 100 {
 		data, err := c.page(ctx, path, query)
 		if err != nil {
 			return nil, err
+		}
+		if total += len(data); total > maxListBytes {
+			return nil, &Error{Code: CodeBudget, Path: path}
 		}
 		var page struct {
 			Metadata *struct {

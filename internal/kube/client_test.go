@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -281,6 +282,28 @@ func TestCollectionRetriesBodyReadFailures(t *testing.T) {
 				t.Fatal("failed response leaked into sample or diagnostics", items, err)
 			}
 		})
+	}
+}
+
+// sync_monitor.py's test_total_size_and_page_count_budgets: three valid 12 MiB
+// pages exceed the 32 MiB list budget, as do 101 small pages.
+func TestTotalSizeAndPageCountBudgets(t *testing.T) {
+	var calls atomic.Int32
+	padding := strings.Repeat(" ", 12*1024*1024)
+	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1","continue":"` + strconv.Itoa(int(n)) + `"},"items":[]}` + padding))
+	})
+	if _, err := List[named](t.Context(), client, "/x", ""); CodeOf(err) != CodeBudget || calls.Load() != 3 {
+		t.Fatal("cumulative size budget not enforced", calls.Load(), err)
+	}
+	calls.Store(0)
+	client, _ = tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1","continue":"` + strconv.Itoa(int(n)) + `"},"items":[]}`))
+	})
+	if _, err := List[named](t.Context(), client, "/x", ""); CodeOf(err) != CodeBudget || calls.Load() != 100 {
+		t.Fatal("page budget not enforced", calls.Load(), err)
 	}
 }
 
