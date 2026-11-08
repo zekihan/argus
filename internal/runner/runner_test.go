@@ -34,12 +34,9 @@ func (f *fakeCheck) Collect(context.Context, time.Time) ([]result.Collection, er
 	return f.collections, f.err
 }
 
-type fakeHealth struct {
-	success time.Time
-	failure string
-}
+type fakeHealth struct{ h kube.Health }
 
-func (f fakeHealth) Health() (time.Time, string) { return f.success, f.failure }
+func (f *fakeHealth) Health() kube.Health { return f.h }
 
 func healthyCollections() []result.Collection {
 	return []result.Collection{
@@ -124,23 +121,39 @@ func TestFailedCollectionFailsClosedWithoutLeakingErrors(t *testing.T) {
 func TestIndexGateReportsProcessHealthOnly(t *testing.T) {
 	check := &fakeCheck{collections: healthyCollections()}
 	now := time.Now()
-	r, _ := newRunner(check, fakeHealth{})
+	api := &fakeHealth{}
+	r, _ := newRunner(check, api)
 	code, index := r.Index(now)
 	if code != 503 || index.Results["apiserver"] != result.Pending || !strings.HasPrefix(index.Results["sample_fresh"], "stale") {
 		t.Fatal(code, index.Results)
 	}
-	r, _ = newRunner(check, fakeHealth{success: now, failure: kube.CodeForbidden})
+	// One check's missing permission does not trip the gate while others succeed.
+	api.h = kube.Health{LastForbidden: now.Add(-time.Second), LastSuccess: now}
 	r.Refresh(t.Context(), "fake")
 	check.collections[0].Items[0].Results["ready"] = "not_ready"
 	r.Refresh(t.Context(), "fake")
 	code, index = r.Index(time.Now())
 	if code != 200 || index.Results["apiserver"] != result.OK || index.Routes["/v1/things/ns/expected"] != "ready: not_ready" || index.Routes["/v1/things/system"] != result.OK {
-		t.Fatal("unhealthy item must not trip the process gate", code, index)
+		t.Fatal("unhealthy item or one forbidden check tripped the process gate", code, index)
 	}
-	r, _ = newRunner(check, fakeHealth{success: now.Add(-time.Hour), failure: kube.CodeUnauthorized})
-	r.Refresh(t.Context(), "fake")
-	if code, index := r.Index(time.Now()); code != 503 || index.Results["apiserver"] != kube.CodeUnauthorized {
-		t.Fatal("API failure did not trip the gate", code, index.Results)
+	// success -> failure: a failure newer than the last success trips the gate at once.
+	api.h = kube.Health{LastSuccess: now, LastFailure: now.Add(time.Second), FailureCode: kube.CodeUnauthorized}
+	if code, index := r.Index(now.Add(2 * time.Second)); code != 503 || index.Results["apiserver"] != kube.CodeUnauthorized {
+		t.Fatal("recent success masked a newer failure", code, index.Results)
+	}
+	// failure -> recovery.
+	api.h.LastSuccess = now.Add(3 * time.Second)
+	if code, index := r.Index(now.Add(4 * time.Second)); code != 200 || index.Results["apiserver"] != result.OK {
+		t.Fatal("recovery not reflected", code, index.Results)
+	}
+	// RBAC-wide refusal: nothing succeeds.
+	api.h = kube.Health{LastSuccess: now.Add(-time.Hour), LastForbidden: now}
+	if code, index := r.Index(now); code != 503 || index.Results["apiserver"] != kube.CodeForbidden {
+		t.Fatal("RBAC-wide failure did not trip the gate", code, index.Results)
+	}
+	api.h = kube.Health{LastSuccess: now.Add(-time.Hour)}
+	if _, index := r.Index(now); index.Results["apiserver"] != "stale" {
+		t.Fatal(index.Results)
 	}
 	r, _ = newRunner(check, nil)
 	r.Refresh(t.Context(), "fake")

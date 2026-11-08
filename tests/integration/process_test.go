@@ -264,6 +264,9 @@ func TestServeEndToEnd(t *testing.T) {
 	if code, body := get("/v1/cronjobs", monitoringToken); code != 503 || body["results"].(map[string]any)["collection"] != "api_error" {
 		t.Fatal(code, body)
 	}
+	if code, body := get("/v1/checks", monitoringToken); code != 503 || body["results"].(map[string]any)["apiserver"] != "api_error" {
+		t.Fatal("an API outage after a success did not trip the gate", code, body["results"])
+	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}

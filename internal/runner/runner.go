@@ -50,9 +50,9 @@ func Code(err error) string {
 	return "collection_error"
 }
 
-// HealthSource reports the API client's last success and last failure code.
+// HealthSource reports the outcome of recent API requests.
 type HealthSource interface {
-	Health() (time.Time, string)
+	Health() kube.Health
 }
 
 // Timing is one check's schedule.
@@ -309,14 +309,18 @@ func (r *Runner) apiserver(now time.Time) string {
 	if r.api == nil {
 		return result.NA
 	}
-	success, failure := r.api.Health()
-	if !success.IsZero() && now.Sub(success) <= r.apiMaxAge {
+	h := r.api.Health()
+	switch {
+	// The latest outcome decides: a failure after the last success trips the
+	// gate at once, and a success after it clears it.
+	case !h.LastFailure.IsZero() && h.LastFailure.After(h.LastSuccess):
+		return h.FailureCode
+	case !h.LastSuccess.IsZero() && now.Sub(h.LastSuccess) <= r.apiMaxAge:
 		return result.OK
-	}
-	if failure != "" {
-		return failure
-	}
-	if success.IsZero() {
+	case !h.LastForbidden.IsZero() && h.LastForbidden.After(h.LastSuccess):
+		// Every recent request was refused: RBAC-wide failure.
+		return kube.CodeForbidden
+	case h.LastSuccess.IsZero():
 		return result.Pending
 	}
 	return result.Reason("stale")

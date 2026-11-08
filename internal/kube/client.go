@@ -77,9 +77,22 @@ type Client struct {
 	HTTP      *http.Client
 	UserAgent string
 
-	mu          sync.Mutex
-	lastSuccess time.Time
-	lastFailure string
+	mu     sync.Mutex
+	health Health
+}
+
+// Health is the outcome of recent API requests.
+type Health struct {
+	// LastSuccess is the last 2xx response.
+	LastSuccess time.Time
+	// LastFailure and FailureCode describe the last request that says the API
+	// itself is unusable: transport, TLS, timeouts, 401, 5xx, invalid responses.
+	LastFailure time.Time
+	FailureCode string
+	// LastForbidden is the last 403 or 404: the API answered, but this
+	// permission or resource is missing. It fails one check, not the process,
+	// unless nothing succeeds.
+	LastForbidden time.Time
 }
 
 // Loopback reports whether origin is a plain-HTTP loopback origin such as a
@@ -128,25 +141,32 @@ func New(base, tokenFile, caFile, version string, timeout time.Duration) (*Clien
 	return client, nil
 }
 
-// Health returns the time of the last successful API response and the code of
-// the most recent failure.
-func (c *Client) Health() (time.Time, string) {
+// Health returns the outcome of recent API requests.
+func (c *Client) Health() Health {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.lastSuccess, c.lastFailure
+	return c.health
 }
 
 func (c *Client) record(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := time.Now()
 	if err == nil {
-		c.lastSuccess = time.Now()
+		c.health.LastSuccess = now
 		return
 	}
 	var kerr *Error
-	// A canceled collection says nothing about the API server.
-	if errors.As(err, &kerr) && kerr.Code != CodeClient {
-		c.lastFailure = kerr.Code
+	if !errors.As(err, &kerr) {
+		return
+	}
+	switch kerr.Code {
+	case CodeClient, CodeConflict:
+		// A canceled collection or a lost precondition says nothing about the API.
+	case CodeForbidden, CodeNotFound:
+		c.health.LastForbidden = now
+	default:
+		c.health.LastFailure, c.health.FailureCode = now, kerr.Code
 	}
 }
 

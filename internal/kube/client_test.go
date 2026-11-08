@@ -86,7 +86,7 @@ func TestPaginationAndTokenRotation(t *testing.T) {
 	if err != nil || len(items) != 6 || calls.Load() != 6 {
 		t.Fatal(items, calls.Load(), err)
 	}
-	if success, _ := client.Health(); success.IsZero() {
+	if client.Health().LastSuccess.IsZero() {
 		t.Fatal("success not recorded")
 	}
 }
@@ -118,8 +118,34 @@ func TestPaginationFailureDiscardsPartialSample(t *testing.T) {
 	if err == nil || len(items) != 0 || strings.Contains(err.Error(), "sensitive") || CodeOf(err) != CodeForbidden {
 		t.Fatal(items, err)
 	}
-	if _, failure := client.Health(); failure != CodeForbidden {
-		t.Fatal("failure not recorded", failure)
+	if h := client.Health(); h.LastForbidden.IsZero() || !h.LastFailure.IsZero() {
+		t.Fatal("refusal not recorded as a missing permission", h)
+	}
+}
+
+func TestHealthTracksTheLatestOutcome(t *testing.T) {
+	var status atomic.Int32
+	status.Store(200)
+	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(int(status.Load()))
+		_, _ = w.Write([]byte(`{}`))
+	})
+	var out map[string]any
+	_ = client.Get(t.Context(), "/version", &out)
+	ok := client.Health()
+	if ok.LastSuccess.IsZero() || !ok.LastFailure.IsZero() {
+		t.Fatal(ok)
+	}
+	status.Store(401)
+	_ = client.Get(t.Context(), "/version", &out)
+	failed := client.Health()
+	if failed.FailureCode != CodeUnauthorized || !failed.LastFailure.After(failed.LastSuccess) {
+		t.Fatal("failure after success not recorded", failed)
+	}
+	status.Store(200)
+	_ = client.Get(t.Context(), "/version", &out)
+	if recovered := client.Health(); !recovered.LastSuccess.After(recovered.LastFailure) {
+		t.Fatal("recovery not recorded", recovered)
 	}
 }
 
