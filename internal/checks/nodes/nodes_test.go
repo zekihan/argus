@@ -28,7 +28,7 @@ func node(t *testing.T, name string) Node {
 }
 
 func metrics(name, cpu, memory string) NodeMetrics {
-	m := NodeMetrics{Usage: map[string]string{"cpu": cpu, "memory": memory}}
+	m := NodeMetrics{Timestamp: now.Add(-30 * time.Second).Format(time.RFC3339), Usage: map[string]string{"cpu": cpu, "memory": memory}}
 	m.Metadata.Name = name
 	return m
 }
@@ -159,6 +159,15 @@ func TestUsageAndLonghornDisks(t *testing.T) {
 	disabled.Metrics = &off
 	if got := evaluate(t, New(disabled, nil), s, now, "agent")["cpu"]; got != result.NA {
 		t.Fatal(got)
+	}
+	for timestamp, want := range map[string]string{"": "metrics_invalid", "garbage": "metrics_invalid",
+		now.Add(10 * time.Minute).Format(time.RFC3339):  "metrics_invalid",
+		now.Add(-10 * time.Minute).Format(time.RFC3339): "metrics_stale(age 10m, max 5m)"} {
+		s = healthy(t)
+		s.Metrics[0].Timestamp = timestamp
+		if got := evaluate(t, check, s, now, "agent"); got["cpu"] != want || got["memory"] != want {
+			t.Fatal(timestamp, got)
+		}
 	}
 	s = healthy(t)
 	s.Longhorn[0] = longhornNode(t, "agent", 1<<30)

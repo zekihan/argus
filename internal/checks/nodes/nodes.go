@@ -32,9 +32,14 @@ type Node struct {
 }
 
 type NodeMetrics struct {
-	Metadata kube.Metadata     `json:"metadata"`
-	Usage    map[string]string `json:"usage"`
+	Metadata  kube.Metadata     `json:"metadata"`
+	Timestamp string            `json:"timestamp"`
+	Usage     map[string]string `json:"usage"`
 }
+
+// metricsMaxAge bounds how old a metrics-server measurement may be; a stuck
+// metrics pipeline must not keep reporting old, low usage as healthy.
+const metricsMaxAge = 5 * time.Minute
 
 type LonghornNode struct {
 	Metadata kube.Metadata `json:"metadata"`
@@ -217,14 +222,37 @@ func (c *Check) node(node Node, s Sample, metrics map[string]NodeMetrics, longho
 	results["cpu"], results["memory"] = result.NA, result.NA
 	if c.config.MetricsEnabled() {
 		m, ok := metrics[name]
-		results["cpu"] = usage(m.Usage["cpu"], node.Status.Allocatable["cpu"], ok, c.config.CPUPercent, "cpu", values)
-		results["memory"] = usage(m.Usage["memory"], node.Status.Allocatable["memory"], ok, c.config.MemoryPercent, "memory", values)
+		if fresh := metricsFreshness(m, ok, now, values); fresh != result.OK {
+			results["cpu"], results["memory"] = fresh, fresh
+		} else {
+			results["cpu"] = usage(m.Usage["cpu"], node.Status.Allocatable["cpu"], ok, c.config.CPUPercent, "cpu", values)
+			results["memory"] = usage(m.Usage["memory"], node.Status.Allocatable["memory"], ok, c.config.MemoryPercent, "memory", values)
+		}
 	}
 	results["longhorn_disk"] = result.NA
 	if l, ok := longhorn[name]; ok && c.config.LonghornNamespace != "" {
 		results["longhorn_disk"] = c.longhornDisk(l, values)
 	}
 	return result.Item{Target: name, Results: result.Set(dimensions, results), Values: values}
+}
+
+func metricsFreshness(m NodeMetrics, found bool, now time.Time, values map[string]any) string {
+	if !found {
+		return result.Reason("metrics_missing")
+	}
+	measured, err := kube.ParseTime(m.Timestamp)
+	if err != nil {
+		return result.Reason("metrics_invalid")
+	}
+	age := now.Sub(measured)
+	values["metricsAgeSeconds"] = age.Seconds()
+	switch {
+	case age < -time.Minute:
+		return result.Reason("metrics_invalid")
+	case age > metricsMaxAge:
+		return result.Reason("metrics_stale", result.Labeled("age", result.Dur(age.Seconds())), result.Labeled("max", result.Dur(metricsMaxAge.Seconds())))
+	}
+	return result.OK
 }
 
 func usage(used, allocatable string, found bool, threshold int, resource string, values map[string]any) string {
