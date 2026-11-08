@@ -97,6 +97,9 @@ func serve(ctx context.Context, listener net.Listener, run func(context.Context)
 	defer drainCancel()
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
+	} else if err != nil {
+		// Never surface the network error text.
+		err = errors.New("HTTP server failed")
 	}
 	if shutdownErr := server.Shutdown(drainCtx); shutdownErr != nil {
 		_ = server.Close()

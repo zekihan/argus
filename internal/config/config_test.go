@@ -173,3 +173,24 @@ func TestHostProbesMustFitTheCollectionTimeout(t *testing.T) {
 		t.Fatal("two batches of 21s accepted within 40s")
 	}
 }
+
+// Startup errors are logged, so they carry fixed descriptions rather than
+// operating-system or decoder text.
+func TestStartupErrorsUseFixedDescriptions(t *testing.T) {
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.json")); err == nil || err.Error() != "open configuration: file does not exist" {
+		t.Fatal(err)
+	}
+	for data, want := range map[string]string{
+		`{"unknown":1}`:                     `decode configuration: unknown field "unknown"`,
+		`{"pollIntervalSeconds":"60"}`:      `decode configuration: field "pollIntervalSeconds" has the wrong type`,
+		`{"pollIntervalSeconds":60`:         "invalid configuration JSON: syntax error at byte 25",
+		`{"a":1,"A":2}`:                     "invalid configuration JSON: duplicate or invalid object key",
+		`{"checks":{"hosts":{"user":[1]}}}`: `decode configuration: field "checks.hosts.user" has the wrong type`,
+		"{\"x\":\"\x00secret\"}":            "invalid configuration JSON: syntax error at byte 7",
+	} {
+		_, err := Parse([]byte(data))
+		if err == nil || err.Error() != want {
+			t.Fatalf("%s: got %v, want %s", data, err, want)
+		}
+	}
+}

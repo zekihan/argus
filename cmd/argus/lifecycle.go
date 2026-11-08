@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zekihan/argus/internal/checks/certificates"
+	"github.com/zekihan/argus/internal/config"
 )
 
 // pkiLifecycle runs check_postgres_certificates.py's assertions with the
@@ -19,7 +20,7 @@ func pkiLifecycle(snapshot string, api apiFlags, stdout io.Writer) error {
 	if snapshot != "" {
 		f, err := os.Open(snapshot)
 		if err != nil {
-			return fmt.Errorf("open snapshot: %w", err)
+			return config.FileError("open snapshot", err)
 		}
 		defer func() { _ = f.Close() }()
 		data, err := io.ReadAll(io.LimitReader(f, 64*1024*1024+1))

@@ -111,7 +111,7 @@ func Equal(a, b Ledger) bool {
 func ValidateFile(path string) (Ledger, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open ledger file: %w", err)
+		return nil, config.FileError("open ledger file", err)
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, MaxBytes+1))

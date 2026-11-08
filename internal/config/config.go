@@ -8,8 +8,10 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -198,7 +200,7 @@ func Load(path string) (Config, error) {
 	c := Default()
 	f, err := os.Open(path)
 	if err != nil {
-		return c, fmt.Errorf("open configuration: %w", err)
+		return c, FileError("open configuration", err)
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, 1024*1024+1))
@@ -212,12 +214,12 @@ func Load(path string) (Config, error) {
 func Parse(data []byte) (Config, error) {
 	c := Default()
 	if err := UniqueJSON(data); err != nil {
-		return c, fmt.Errorf("invalid configuration JSON: %w", err)
+		return c, fmt.Errorf("invalid configuration JSON: %s", JSONProblem(err))
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&c); err != nil {
-		return c, fmt.Errorf("decode configuration: %w", err)
+		return c, fmt.Errorf("decode configuration: %s", JSONProblem(err))
 	}
 	c.ApplyDefaults()
 	return c, c.Validate()
@@ -666,6 +668,44 @@ func HostAddress(address string) (string, error) {
 	}
 	return net.JoinHostPort(host, port), nil
 }
+
+// FileError reports a file failure with a fixed description instead of the
+// operating system's error text, so startup diagnostics follow the log rules.
+func FileError(action string, err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("%s: file does not exist", action)
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("%s: permission denied", action)
+	}
+	return fmt.Errorf("%s: file cannot be read", action)
+}
+
+var unknownField = regexp.MustCompile(`^json: unknown field "([A-Za-z0-9_]{1,64})"$`)
+
+// JSONProblem describes a decoding failure without echoing decoder text:
+// only a field name from the operator's own configuration, or a byte offset.
+func JSONProblem(err error) string {
+	var typeErr *json.UnmarshalTypeError
+	var syntaxErr *json.SyntaxError
+	switch {
+	case errors.As(err, &typeErr):
+		return fmt.Sprintf("field %q has the wrong type", strings.Trim(nameUnsafe.ReplaceAllString(typeErr.Field, "_"), "_"))
+	case errors.As(err, &syntaxErr):
+		return fmt.Sprintf("syntax error at byte %d", syntaxErr.Offset)
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "truncated document"
+	}
+	if match := unknownField.FindStringSubmatch(err.Error()); match != nil {
+		return fmt.Sprintf("unknown field %q", match[1])
+	}
+	if strings.HasPrefix(err.Error(), "duplicate") || strings.HasPrefix(err.Error(), "trailing") || strings.HasPrefix(err.Error(), "unexpected delimiter") {
+		return err.Error()
+	}
+	return "invalid JSON"
+}
+
+var nameUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.]`)
 
 // UniqueJSON rejects case-insensitive duplicate keys and trailing JSON documents.
 // Key comparison matches encoding/json's case-insensitive struct field matching.

@@ -147,7 +147,7 @@ func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 	}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return fmt.Errorf("cannot listen on %s", cfg.ListenAddress)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
