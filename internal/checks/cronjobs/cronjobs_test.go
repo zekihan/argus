@@ -207,3 +207,24 @@ func TestFailuresNeedEnoughFailedJobHistory(t *testing.T) {
 		}
 	}
 }
+
+// With successfulJobsHistoryLimit: 0 the successful Job is pruned at once;
+// the CronJob's lastSuccessfulTime supersedes the older retained failures.
+func TestPrunedSuccessSupersedesOlderFailures(t *testing.T) {
+	jobs := []Job{
+		job(t, "b-3", "2026-11-05T22:40:00Z", "2026-11-05T22:40:00Z", "", "Failed"),
+		job(t, "b-2", "2026-11-05T22:30:00Z", "2026-11-05T22:30:00Z", "", "Failed"),
+		job(t, "b-1", "2026-11-05T22:20:00Z", "2026-11-05T22:20:00Z", "", "Failed"),
+	}
+	body := `{"spec":{"failedJobsHistoryLimit":3,"successfulJobsHistoryLimit":0},"status":{"lastSuccessfulTime":"2026-11-05T23:00:00Z"}}`
+	h := checktest.New(New(inventory("a", "b", 10800), &fakeAPI{sample: Sample{CronJobs: []CronJob{cron(t, "a", "b", body)}, Jobs: jobs}}), now).Refresh(t)
+	if _, e := h.Get(t, Route+"/a/b"); e.Results["last_run"] != "ok" || e.Results["failures"] != "ok" || e.Values["consecutiveFailures"] != 0 {
+		t.Fatal("pruned success did not supersede older failures", e.Results, e.Values)
+	}
+	// A failure after the last success still counts.
+	jobs = append([]Job{job(t, "b-4", "2026-11-05T23:30:00Z", "2026-11-05T23:30:00Z", "", "Failed")}, jobs...)
+	h = checktest.New(New(inventory("a", "b", 10800), &fakeAPI{sample: Sample{CronJobs: []CronJob{cron(t, "a", "b", body)}, Jobs: jobs}}), now).Refresh(t)
+	if _, e := h.Get(t, Route+"/a/b"); e.Results["last_run"] != "failed" || e.Values["consecutiveFailures"] != 1 {
+		t.Fatal(e.Results, e.Values)
+	}
+}

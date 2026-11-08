@@ -186,7 +186,7 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 			}
 		}
 		sort.SliceStable(jobs, func(i, j int) bool { return created(jobs[i]).After(created(jobs[j])) })
-		evaluateRuns(jobs, item, now, results, values)
+		evaluateRuns(jobs, cron.Status.LastSuccessfulTime, item, now, results, values)
 		// Kubernetes keeps one failed Job by default; when it cannot retain
 		// enough failures to reach the threshold, failures cannot be judged.
 		history := 1
@@ -203,8 +203,17 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 	return collection
 }
 
-func evaluateRuns(jobs []Job, item config.CronJob, now time.Time, results map[string]string, values map[string]any) {
+// evaluateRuns judges retained Jobs. The CronJob's lastSuccessfulTime is
+// evidence too: a success whose Job was already pruned (for example with
+// successfulJobsHistoryLimit: 0) supersedes every failure created before it.
+func evaluateRuns(jobs []Job, lastSuccessfulTime *string, item config.CronJob, now time.Time, results map[string]string, values map[string]any) {
 	results["last_run"], results["active"], results["failures"] = result.NA, result.OK, result.OK
+	var lastSuccess time.Time
+	if lastSuccessfulTime != nil {
+		if t, err := kube.ParseTime(*lastSuccessfulTime); err == nil && !t.After(now) {
+			lastSuccess = t
+		}
+	}
 	maxRun := float64(item.MaxRunSeconds)
 	stuck, active, consecutive := 0, 0, 0
 	counting, sawFinished := true, false
@@ -218,23 +227,34 @@ func evaluateRuns(jobs []Job, item config.CronJob, now time.Time, results map[st
 			}
 			continue
 		}
+		superseded := failed && !lastSuccess.IsZero() && !created(job).After(lastSuccess)
 		if !sawFinished {
 			sawFinished = true
 			results["last_run"] = result.OK
 			values["lastRun"] = job.Metadata.Name
-			if failed {
+			switch {
+			case superseded:
+				// The latest run succeeded; its Job is gone.
+				values["lastRun"] = "lastSuccessfulTime"
+			case failed:
 				results["last_run"] = result.Reason("failed")
-			} else if end, err := kube.ParseTime(job.Status.CompletionTime); err == nil && startErr == nil && end.Sub(start).Seconds() > maxRun {
-				results["last_run"] = result.Reason("overran", result.Labeled("took", result.Dur(end.Sub(start).Seconds())), result.Labeled("max", result.Dur(maxRun)))
+			default:
+				if end, err := kube.ParseTime(job.Status.CompletionTime); err == nil && startErr == nil && end.Sub(start).Seconds() > maxRun {
+					results["last_run"] = result.Reason("overran", result.Labeled("took", result.Dur(end.Sub(start).Seconds())), result.Labeled("max", result.Dur(maxRun)))
+				}
 			}
 		}
 		if counting {
-			if failed {
+			if failed && !superseded {
 				consecutive++
 			} else {
 				counting = false
 			}
 		}
+	}
+	if !sawFinished && !lastSuccess.IsZero() {
+		results["last_run"] = result.OK
+		values["lastRun"] = "lastSuccessfulTime"
 	}
 	values["active"], values["consecutiveFailures"] = active, consecutive
 	if stuck > 0 {
