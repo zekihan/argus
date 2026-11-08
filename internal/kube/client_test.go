@@ -119,8 +119,8 @@ func TestPaginationFailureDiscardsPartialSample(t *testing.T) {
 	if err == nil || len(items) != 0 || strings.Contains(err.Error(), "sensitive") || CodeOf(err) != CodeForbidden {
 		t.Fatal(items, err)
 	}
-	if h := client.Health(); h.LastForbidden.IsZero() || !h.LastFailure.IsZero() {
-		t.Fatal("refusal not recorded as a missing permission", h)
+	if h := client.Health(); h.ForbiddenPaths != 1 || h.OKPaths != 1 || !h.LastFailure.IsZero() {
+		t.Fatal("refusals not recorded as missing permissions", h)
 	}
 }
 
@@ -147,6 +147,32 @@ func TestHealthTracksTheLatestOutcome(t *testing.T) {
 	_ = client.Get(t.Context(), "/version", &out)
 	if recovered := client.Health(); !recovered.LastSuccess.After(recovered.LastFailure) {
 		t.Fatal("recovery not recorded", recovered)
+	}
+}
+
+// One aggregated API or conversion webhook failing is that check's problem,
+// not the API server's: it must not trip the apiserver gate.
+func TestAggregatedAPIFailureIsNotAnAPIFailure(t *testing.T) {
+	client, _ := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/apis/metrics.k8s.io/") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1"},"items":[]}`))
+	})
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := List[named](t.Context(), client, "/apis/metrics.k8s.io/v1beta1/nodes", ""); CodeOf(err) != CodeHTTP {
+		t.Fatal(err)
+	}
+	if h := client.Health(); !h.LastFailure.IsZero() || h.LastSuccess.IsZero() {
+		t.Fatal("aggregated API failure recorded as API-wide", h)
+	}
+	core, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	_, _ = List[named](t.Context(), core, "/api/v1/nodes", "")
+	if h := core.Health(); h.FailureCode != CodeHTTP {
+		t.Fatal("core API failure not recorded", h)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,7 +129,7 @@ func TestIndexGateReportsProcessHealthOnly(t *testing.T) {
 		t.Fatal(code, index.Results)
 	}
 	// One check's missing permission does not trip the gate while others succeed.
-	api.h = kube.Health{LastForbidden: now.Add(-time.Second), LastSuccess: now}
+	api.h = kube.Health{ForbiddenPaths: 1, OKPaths: 3, LastSuccess: now}
 	r.Refresh(t.Context(), "fake")
 	check.collections[0].Items[0].Results["ready"] = "not_ready"
 	r.Refresh(t.Context(), "fake")
@@ -147,7 +148,7 @@ func TestIndexGateReportsProcessHealthOnly(t *testing.T) {
 		t.Fatal("recovery not reflected", code, index.Results)
 	}
 	// RBAC-wide refusal: nothing succeeds.
-	api.h = kube.Health{LastSuccess: now.Add(-time.Hour), LastForbidden: now}
+	api.h = kube.Health{LastSuccess: now, ForbiddenPaths: 4}
 	if code, index := r.Index(now); code != 503 || index.Results["apiserver"] != kube.CodeForbidden {
 		t.Fatal("RBAC-wide failure did not trip the gate", code, index.Results)
 	}
@@ -159,6 +160,22 @@ func TestIndexGateReportsProcessHealthOnly(t *testing.T) {
 	r.Refresh(t.Context(), "fake")
 	if code, index := r.Index(time.Now()); code != 200 || index.Results["apiserver"] != result.NA {
 		t.Fatal(code, index.Results)
+	}
+}
+
+type countingProber struct{ calls atomic.Int32 }
+
+func (p *countingProber) Probe(context.Context) error { p.calls.Add(1); return nil }
+
+func TestProbeRunsOnItsOwnInterval(t *testing.T) {
+	r, _ := newRunner(&fakeCheck{collections: healthyCollections()}, nil)
+	prober := &countingProber{}
+	r.ProbeEvery(prober, 10*time.Millisecond, time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	r.Run(ctx)
+	if prober.calls.Load() < 3 {
+		t.Fatal("probe did not repeat", prober.calls.Load())
 	}
 }
 

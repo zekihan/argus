@@ -79,6 +79,8 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	created := now().Add(-24 * time.Hour).Format(time.RFC3339)
 	recent := now().Add(-time.Hour).Format(time.RFC3339)
 	switch r.URL.Path {
+	case "/api":
+		_, _ = w.Write([]byte(`{"kind":"APIVersions","versions":["v1"]}`))
 	case "/api/v1/namespaces/argus/configmaps/argus-state":
 		if r.Method == http.MethodPut {
 			body, _ := io.ReadAll(r.Body)

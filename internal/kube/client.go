@@ -79,20 +79,25 @@ type Client struct {
 
 	mu     sync.Mutex
 	health Health
+	// paths holds the latest permission outcome per resource path: true
+	// after a success, false after a 403 or 404.
+	paths map[string]bool
 }
 
 // Health is the outcome of recent API requests.
 type Health struct {
-	// LastSuccess is the last 2xx response.
+	// LastSuccess is the last 2xx response, including the /api probe.
 	LastSuccess time.Time
-	// LastFailure and FailureCode describe the last request that says the API
-	// itself is unusable: transport, TLS, timeouts, 401, 5xx, invalid responses.
+	// LastFailure and FailureCode describe the last failure that shows the
+	// API server itself is unusable: transport or TLS errors, a missing token,
+	// 401, and errors from the core API. A 5xx or timeout from an aggregated
+	// API or a CRD conversion webhook fails only the check that asked.
 	LastFailure time.Time
 	FailureCode string
-	// LastForbidden is the last 403 or 404: the API answered, but this
-	// permission or resource is missing. It fails one check, not the process,
-	// unless nothing succeeds.
-	LastForbidden time.Time
+	// OKPaths and ForbiddenPaths count resource paths whose latest outcome
+	// was a success or a refusal (403/404). Only refusals everywhere is an
+	// RBAC-wide failure; one refusal fails only its own check.
+	OKPaths, ForbiddenPaths int
 }
 
 // Loopback reports whether origin is a plain-HTTP loopback origin such as a
@@ -145,15 +150,47 @@ func New(base, tokenFile, caFile, version string, timeout time.Duration) (*Clien
 func (c *Client) Health() Health {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.health
+	h := c.health
+	for _, ok := range c.paths {
+		if ok {
+			h.OKPaths++
+		} else {
+			h.ForbiddenPaths++
+		}
+	}
+	return h
 }
 
-func (c *Client) record(err error) {
+// Probe makes one authenticated request to the core API discovery endpoint,
+// so the API health stays current between slow check intervals.
+func (c *Client) Probe(ctx context.Context) error {
+	var discovery map[string]any
+	return c.Get(ctx, "/api", &discovery)
+}
+
+// coreAPI reports a path served by the API server itself rather than by an
+// aggregated API or through a CRD conversion webhook.
+func coreAPI(path string) bool {
+	return path == "/api" || path == "/version" || strings.HasPrefix(path, "/api/")
+}
+
+// resourcePath reports a path whose permission outcome is tracked: every
+// resource read, but not the discovery and version endpoints, which any
+// authenticated (or anonymous) client may read.
+func resourcePath(path string) bool { return path != "/api" && path != "/version" }
+
+func (c *Client) record(path string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.paths == nil {
+		c.paths = map[string]bool{}
+	}
 	now := time.Now()
 	if err == nil {
 		c.health.LastSuccess = now
+		if resourcePath(path) {
+			c.paths[path] = true
+		}
 		return
 	}
 	var kerr *Error
@@ -164,9 +201,15 @@ func (c *Client) record(err error) {
 	case CodeClient, CodeConflict:
 		// A canceled collection or a lost precondition says nothing about the API.
 	case CodeForbidden, CodeNotFound:
-		c.health.LastForbidden = now
-	default:
+		if resourcePath(path) {
+			c.paths[path] = false
+		}
+	case CodeToken, CodeUnauthorized, CodeUnreachable:
 		c.health.LastFailure, c.health.FailureCode = now, kerr.Code
+	default:
+		if coreAPI(path) {
+			c.health.LastFailure, c.health.FailureCode = now, kerr.Code
+		}
 	}
 }
 
@@ -253,7 +296,7 @@ func (c *Client) page(ctx context.Context, path string, query url.Values) ([]byt
 }
 
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte) (data []byte, retry bool, err error) {
-	defer func() { c.record(err) }()
+	defer func() { c.record(path, err) }()
 	target := c.BaseURL + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()

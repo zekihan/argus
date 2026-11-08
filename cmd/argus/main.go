@@ -133,6 +133,9 @@ func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 		return err
 	}
 	r := runner.New(logger, version, health, time.Duration(cfg.MaxSampleAgeSeconds)*time.Second)
+	if client != nil {
+		r.ProbeEvery(client, time.Duration(cfg.PollIntervalSeconds)*time.Second, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
+	}
 	for _, b := range built {
 		r.Add(b.Check, b.Timing)
 	}

@@ -82,6 +82,10 @@ type Runner struct {
 	api       HealthSource
 	apiMaxAge time.Duration
 	entries   []*entry
+
+	prober        Prober
+	probeInterval time.Duration
+	probeTimeout  time.Duration
 }
 
 // New returns a runner. api may be nil when no check talks to Kubernetes.
@@ -94,9 +98,39 @@ func (r *Runner) Add(check Check, timing Timing) {
 	r.entries = append(r.entries, &entry{check: check, timing: timing, described: check.Describe(), summaries: map[string]string{}})
 }
 
+// Prober makes one lightweight authenticated API request.
+type Prober interface {
+	Probe(ctx context.Context) error
+}
+
+// ProbeEvery probes the API on its own interval, so the apiserver result does
+// not depend on how often the checks poll.
+func (r *Runner) ProbeEvery(prober Prober, interval, timeout time.Duration) {
+	r.prober, r.probeInterval, r.probeTimeout = prober, interval, timeout
+}
+
 // Run polls every check on its own interval until ctx is cancelled.
 func (r *Runner) Run(ctx context.Context) {
 	var wg sync.WaitGroup
+	if r.prober != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				probeCtx, cancel := context.WithTimeout(ctx, r.probeTimeout)
+				// The outcome is recorded by the client; Index reads it.
+				_ = r.prober.Probe(probeCtx)
+				cancel()
+				timer := time.NewTimer(r.probeInterval)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+		}()
+	}
 	for _, e := range r.entries {
 		wg.Add(1)
 		go func() {
@@ -317,11 +351,11 @@ func (r *Runner) apiserver(now time.Time) string {
 	// gate at once, and a success after it clears it.
 	case !h.LastFailure.IsZero() && h.LastFailure.After(h.LastSuccess):
 		return h.FailureCode
+	case h.ForbiddenPaths > 0 && h.OKPaths == 0:
+		// Every resource read is refused: RBAC-wide failure.
+		return kube.CodeForbidden
 	case !h.LastSuccess.IsZero() && now.Sub(h.LastSuccess) <= r.apiMaxAge:
 		return result.OK
-	case !h.LastForbidden.IsZero() && h.LastForbidden.After(h.LastSuccess):
-		// Every recent request was refused: RBAC-wide failure.
-		return kube.CodeForbidden
 	case h.LastSuccess.IsZero():
 		return result.Pending
 	}
