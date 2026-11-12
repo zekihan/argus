@@ -215,6 +215,16 @@
           "name": "scheduled-job-state"
         }
       ]
+    },
+    "doh": {
+      "enabled": true,
+      "url": "https://dns.example.com/dns-query",
+      "name": "one.one.one.one",
+      "expectedIPv4": "1.1.1.1",
+      "intervalSeconds": 60,
+      "collectionTimeoutSeconds": 20,
+      "maxSampleAgeSeconds": 180,
+      "dnsResolver": "1.1.1.1:53"
     }
   }
 }

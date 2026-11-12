@@ -52,7 +52,7 @@ func Build(cfg config.Config, deps Deps) ([]Built, error) {
 // Kubernetes reports whether any enabled check talks to the Kubernetes API.
 func Kubernetes(cfg config.Config) bool {
 	for _, enabled := range cfg.Enabled() {
-		if enabled.Name != "hosts" {
+		if enabled.Name != "hosts" && enabled.Name != "doh" {
 			return true
 		}
 	}

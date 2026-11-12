@@ -138,28 +138,43 @@ func TestMinimalSectionsLoadWithDefaults(t *testing.T) {
 
 func TestSectionValidation(t *testing.T) {
 	for name, section := range map[string]string{
-		"host name":          `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"Bad Name","address":"192.0.2.1"}]}`,
-		"host duplicate":     `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1"},{"name":"a","address":"192.0.2.2"}]}`,
-		"host expects":       `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1","expects":["ssh"]}]}`,
-		"host port":          `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1:0"}]}`,
-		"host key path":      `"hosts":{"privateKeyFile":"k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1"}]}`,
-		"nodes inventory":    `"nodes":{"expected":[]}`,
-		"nodes percent":      `"nodes":{"expected":["a"],"cpuPercent":101}`,
-		"postgres inventory": `"postgres":{"clusters":[]}`,
-		"longhorn pvc":       `"longhorn":{"namespace":"longhorn","expectedPVCs":["data"],"maxBackupAgeSeconds":1,"systemBackupMaxAgeSeconds":1}`,
-		"longhorn age":       `"longhorn":{"namespace":"longhorn","expectedPVCs":["a/b"],"maxBackupAgeSeconds":0,"systemBackupMaxAgeSeconds":1}`,
-		"cronjob age":        `"cronjobs":{"items":[{"namespace":"a","name":"b","maxAgeSeconds":0}]}`,
-		"cronjob duplicate":  `"cronjobs":{"items":[{"namespace":"a","name":"b","maxAgeSeconds":1},{"namespace":"a","name":"b","maxAgeSeconds":1}]}`,
-		"pki digest":         `"pki":{"rootSHA256":"abc","expectedCertificates":[{"namespace":"a","name":"b"}]}`,
-		"pki inventory":      `"pki":{"rootSHA256":"` + strings.Repeat("a", 64) + `","expectedCertificates":[]}`,
-		"eso expected":       `"externalsecrets":{"expectedExternalSecrets":[{"namespace":"a"}]}`,
-		"argocd namespace":   `"argocd":{"namespace":""}`,
+		"host name":           `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"Bad Name","address":"192.0.2.1"}]}`,
+		"host duplicate":      `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1"},{"name":"a","address":"192.0.2.2"}]}`,
+		"host expects":        `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1","expects":["ssh"]}]}`,
+		"host port":           `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1:0"}]}`,
+		"host key path":       `"hosts":{"privateKeyFile":"k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1"}]}`,
+		"nodes inventory":     `"nodes":{"expected":[]}`,
+		"nodes percent":       `"nodes":{"expected":["a"],"cpuPercent":101}`,
+		"postgres inventory":  `"postgres":{"clusters":[]}`,
+		"longhorn pvc":        `"longhorn":{"namespace":"longhorn","expectedPVCs":["data"],"maxBackupAgeSeconds":1,"systemBackupMaxAgeSeconds":1}`,
+		"longhorn age":        `"longhorn":{"namespace":"longhorn","expectedPVCs":["a/b"],"maxBackupAgeSeconds":0,"systemBackupMaxAgeSeconds":1}`,
+		"cronjob age":         `"cronjobs":{"items":[{"namespace":"a","name":"b","maxAgeSeconds":0}]}`,
+		"cronjob duplicate":   `"cronjobs":{"items":[{"namespace":"a","name":"b","maxAgeSeconds":1},{"namespace":"a","name":"b","maxAgeSeconds":1}]}`,
+		"pki digest":          `"pki":{"rootSHA256":"abc","expectedCertificates":[{"namespace":"a","name":"b"}]}`,
+		"pki inventory":       `"pki":{"rootSHA256":"` + strings.Repeat("a", 64) + `","expectedCertificates":[]}`,
+		"eso expected":        `"externalsecrets":{"expectedExternalSecrets":[{"namespace":"a"}]}`,
+		"argocd namespace":    `"argocd":{"namespace":""}`,
+		"doh http url":        `"doh":{"url":"http://dns.example.com/dns-query","name":"a.example","expectedIPv4":"1.1.1.1"}`,
+		"doh url query":       `"doh":{"url":"https://dns.example.com/dns-query?dns=x","name":"a.example","expectedIPv4":"1.1.1.1"}`,
+		"doh url credentials": `"doh":{"url":"https://u:p@dns.example.com/dns-query","name":"a.example","expectedIPv4":"1.1.1.1"}`,
+		"doh resolver port":   `"doh":{"url":"https://dns.example.com/dns-query","name":"one.one.one.one","expectedIPv4":"1.1.1.1","dnsResolver":"1.1.1.1:5353"}`,
+		"doh resolver name":   `"doh":{"url":"https://dns.example.com/dns-query","name":"one.one.one.one","expectedIPv4":"1.1.1.1","dnsResolver":"one.one.one.one:53"}`,
+		"doh name":            `"doh":{"url":"https://dns.example.com/dns-query","name":"bad_name.example","expectedIPv4":"1.1.1.1"}`,
+		"doh empty name":      `"doh":{"url":"https://dns.example.com/dns-query","name":"","expectedIPv4":"1.1.1.1"}`,
+		"doh ipv6 expected":   `"doh":{"url":"https://dns.example.com/dns-query","name":"a.example","expectedIPv4":"2606:4700::1111"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Parse([]byte(`{"checks":{` + section + `}}`)); err == nil {
 				t.Fatal("invalid section accepted", section)
 			}
 		})
+	}
+}
+
+func TestDoHValidConfigLoads(t *testing.T) {
+	c, err := Parse([]byte(`{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"one.one.one.one.","expectedIPv4":"1.1.1.1","dnsResolver":"[2606:4700:4700::1111]:53"}}}`))
+	if err != nil || c.Checks.DoH == nil || len(c.Enabled()) != 1 {
+		t.Fatal("valid doh section rejected", err)
 	}
 }
 

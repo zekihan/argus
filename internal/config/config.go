@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -173,8 +174,45 @@ type Hosts struct {
 	Hosts          []Host `json:"hosts"`
 }
 
+var hostLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
+
+type DoH struct {
+	Schedule
+	URL          string `json:"url"`
+	Name         string `json:"name"`
+	ExpectedIPv4 string `json:"expectedIPv4"`
+	DNSResolver  string `json:"dnsResolver,omitempty"`
+}
+
+func (d *DoH) validate() error {
+	u, err := url.Parse(d.URL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("url must be an HTTPS URL without credentials, query or fragment")
+	}
+	if d.DNSResolver != "" {
+		host, port, err := net.SplitHostPort(d.DNSResolver)
+		if err != nil || net.ParseIP(host) == nil || port != "53" {
+			return fmt.Errorf("dnsResolver must be an IP address on port 53")
+		}
+	}
+	name := strings.TrimSuffix(d.Name, ".")
+	if len(name) == 0 || len(name) > 253 {
+		return fmt.Errorf("name must be a DNS hostname")
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) > 63 || !hostLabel.MatchString(label) {
+			return fmt.Errorf("name must be a DNS hostname")
+		}
+	}
+	if ip := net.ParseIP(d.ExpectedIPv4); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("expectedIPv4 must be an IPv4 address")
+	}
+	return nil
+}
+
 // Checks holds one optional section per check. An absent section disables it.
 type Checks struct {
+	DoH             *DoH             `json:"doh,omitempty"`
 	PVCs            *PVCs            `json:"pvcs,omitempty"`
 	Hosts           *Hosts           `json:"hosts,omitempty"`
 	Nodes           *Nodes           `json:"nodes,omitempty"`
@@ -409,6 +447,7 @@ func (c Config) Enabled() []EnabledCheck {
 			out = append(out, EnabledCheck{Name: name, Schedule: s(), validate: v})
 		}
 	}
+	add(k.DoH != nil, "doh", func() Schedule { return k.DoH.Schedule }, func() error { return k.DoH.validate() })
 	add(k.PVCs != nil, "pvcs", func() Schedule { return k.PVCs.Schedule }, func() error { return k.PVCs.validate() })
 	add(k.Hosts != nil, "hosts", func() Schedule { return k.Hosts.Schedule }, func() error { return k.Hosts.validate() })
 	add(k.Nodes != nil, "nodes", func() Schedule { return k.Nodes.Schedule }, func() error { return k.Nodes.validate() })

@@ -16,7 +16,7 @@ HELM = os.environ.get("HELM", "helm")
 DEFAULTS = CHART / "ci/default-values.yaml"
 ALL_CHECKS = CHART / "ci/all-checks-values.yaml"
 FULL_CONFIG = CHART / "ci/full-config-values.yaml"
-CHECKS = ["pvcs", "hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd"]
+CHECKS = ["doh", "pvcs", "hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd"]
 
 
 def run(*args, release="argus", namespace="argus"):
@@ -138,7 +138,7 @@ class ChartTests(unittest.TestCase):
             json.dump(config, f)
             f.flush()
             for check in CHECKS:
-                if check == "hosts":
+                if check in ("hosts", "doh"):
                     continue
                 RecordingAPI.requests = []
                 subprocess.run([str(ROOT / "dist/argus"), "once", "-config", f.name, "-check", check, "-api-url", origin], capture_output=True)

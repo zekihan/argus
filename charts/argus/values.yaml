@@ -57,6 +57,12 @@ config:
 # Each check is disabled by default and gets RBAC only when enabled. Every key
 # other than "enabled" is passed to the check's configuration section.
 checks:
+  doh:
+    enabled: false
+    url: ""
+    name: ""
+    expectedIPv4: ""
+    dnsResolver: ""
   pvcs:
     enabled: false
     storageClasses: [longhorn]

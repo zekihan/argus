@@ -13,6 +13,11 @@ ssh:
   knownHosts: |
     192.0.2.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyExampleOnlyExampleOnlyExample
 checks:
+  doh:
+    enabled: true
+    url: https://dns.example.com/dns-query
+    name: one.one.one.one
+    expectedIPv4: 1.1.1.1
   pvcs:
     enabled: true
     storageClasses: [longhorn]
