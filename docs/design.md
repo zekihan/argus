@@ -176,6 +176,7 @@ been observed. After a restart, the value `observedSinceSeconds` says how long h
 |---|---|---|---|
 | `/v1/hosts/{name}` | `ssh` (connect and pinned host key), `disk`, `inodes`, `memory`, `swap`, `load`, `cpu_pressure`, `uptime`, `failed_units`, `zfs`, `time_sync`, `ups`. A tool that isn't installed is `n/a`; a tool that is present but fails (permission, error) is `unavailable`, never `ok`. Today a failed `zpool status` silently stays `ok` (`check-host.sh:214`). The host inventory declares the dimensions a host must have (`expects: [zfs, ups]`), and for those a missing tool is `unavailable`. | SSH and probe latency | `check-host.sh` via Gatus |
 | `/v1/nodes/{name}` | `ready` (must be True; missing or Unknown fails), `memory_pressure`, `disk_pressure`, `pid_pressure` (must be present and False; all eight nodes report them today), `network` (only NetworkUnavailable may be absent, which is `n/a` on k3s/flannel); `schedulable` and `kubelet_version` (cordoned or skewed from the control plane **for more than 2h**, so system-upgrade's rolling drain doesn't page); `cpu`, `memory` (metrics-server usage against allocatable); `longhorn_disk` (disks ready and storage left; `n/a` where no Longhorn node exists, i.e. the control plane) | CPU and memory usage and %, Longhorn storage % | **new** |
+| `/v1/pvcs/{ns}/{pvc}` | `bound`, `usage` (filesystem used bytes / capacity above 80%); aggregate `/v1/pvcs` also checks node and optional PVC inventory. Discover every PVC in configured storage classes, including pgdata and Redis. Missing, invalid, future or stale statistics fail closed. Explicit `allowUnmounted` claims may be idle when no VolumeAttachment exists or during a bounded first-sample grace period for a new attachment. Raw-block claims have no filesystem usage dimension. | usedBytes, capacityBytes, usedPercent, measuredAt | **OPS-420** |
 | `/v1/postgres/{ns}/{cluster}` | `instances` (ready/updated against desired), `proxy` (PgBouncer ready), `conditions` (any present condition that is False; missing ones such as watchledger's `PostgresDataInitialized` are not failures), `scheduled_backups` (latest scheduled backup failed) | replica counts | **new** |
 | `/v1/pgbackrest/{ns}/{cluster}/{repo}` | `freshness`, `evidence` (source eligible), `destination` (identity unchanged), `stanza` (created), `state` (ledger valid and persisted) | last success, age, max age, source | backrestwatch |
 | `/v1/pgbackrest` and `/v1/postgres` aggregates | plus `inventory`: clusters/repos present but not configured, and configured but missing | counts | backrestwatch |
@@ -197,8 +198,6 @@ container name. After a restart it judges only the part of the window it has obs
 plain `ok`, and puts the coverage in `restartWindowObservedSeconds`.
 
 Dropped on purpose:
-- **PVC filesystem usage:** it needs `nodes/proxy`, which is effectively kubelet exec, and `df` in the
-  host check already covers the kubelet CSI mounts at 90%.
 - **Longhorn allocation and node pod capacity:** `actualSize` includes snapshots (the redis volumes are
   at 107–124% today), and node pod counts would need a cluster-wide pod list.
 
@@ -306,7 +305,12 @@ Tests:
 
 The chart renders RBAC from the enabled checks; a disabled check gets no permissions.
 - **ClusterRoles** (get/list), for cluster-wide discovery and for objects that carry no credentials:
-  - `nodes`, metrics.k8s.io `nodes`;
+  - `nodes`, metrics.k8s.io `nodes`, `persistentvolumeclaims`;
+  - PVC `allowUnmounted` additionally reads storage.k8s.io `volumeattachments` to confirm detachment;
+  - PVC usage adds **get only** on `nodes/stats`, restricted to `expectedNodes`. It reads
+    `https://<InternalIP>:10250/stats/summary` directly using the projected token and cluster CA.
+    TLS validates the node IP, redirects are refused, and kubelet failures affect only this check.
+    NetworkPolicy must allow TCP 10250 to the expected node IPs. No API-server proxy is used.
   - `postgresclusters`, for inventory drift;
   - cert-manager `certificates`, `certificaterequests` (CSRs and public certificates only), `issuers`
     and `clusterissuers`; trust-manager `bundles`;
@@ -602,3 +606,5 @@ a released chart, auto-merged by the shared owned-edge Renovate rule. The Argus-
 and its test are dropped. In their place, config stays backward compatible (an edge-against-released-chart
 check in Argus CI), a missing permission fails only that check, and the SSH risk rests on the forced
 command.
+
+**OPS-420 (owner decision, 2026-11-12):** add PVC fill monitoring at 80% for pgdata, Redis and all Longhorn PVCs. This supersedes the earlier omission: direct kubelet stats uses [nodes/stats](https://kubernetes.io/docs/reference/access-authn-authz/kubelet-authn-authz/), preserving the prohibition on nodes/proxy. The check is optional and disabled by default. An unlisted detached PVC without fresh statistics is unavailable. Explicit `allowUnmounted` claims report `n/a` only when a successful VolumeAttachment inventory shows no attachment to their bound PV. A newly created attachment gets a first-sample grace period bounded by `maxStatsAgeSeconds` and its API creation timestamp, including at response time. Older attachments require statistics; malformed or future timestamps fail. Short scheduled jobs may finish before kubelet measures them, so `n/a` is unmeasured, not proof of low usage. Fresh high, invalid and future readings never get the grace exception. Multiple mounts use the highest fresh usage. Missing measurements reuse the last valid measurement for the same PVC UID only until its original timestamp expires (300 seconds by default); high retained readings still fail. Raw-block usage is `n/a` because no filesystem exists. API errors and missing expected nodes fail closed; an empty PVC inventory cannot pass.

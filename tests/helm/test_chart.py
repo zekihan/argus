@@ -16,7 +16,7 @@ HELM = os.environ.get("HELM", "helm")
 DEFAULTS = CHART / "ci/default-values.yaml"
 ALL_CHECKS = CHART / "ci/all-checks-values.yaml"
 FULL_CONFIG = CHART / "ci/full-config-values.yaml"
-CHECKS = ["hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd"]
+CHECKS = ["pvcs", "hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd"]
 
 
 def run(*args, release="argus", namespace="argus"):
@@ -161,7 +161,7 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(container["securityContext"]["capabilities"]["drop"], ["ALL"])
         for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
             self.assertEqual(container[probe]["httpGet"], {"path": "/healthz", "port": "api", "scheme": "HTTPS"})
-        self.assertEqual(container["image"], "ghcr.io/zekihan/argus:0.1.0")
+        self.assertEqual(container["image"], f"ghcr.io/zekihan/argus:{(ROOT / 'VERSION').read_text().strip()}")
         self.assertEqual(container["args"], ["serve", "-config=/config/config.json"])
         service = kind(docs, "Service")[0]
         self.assertEqual(service["spec"]["selector"], deployment["spec"]["selector"]["matchLabels"])
@@ -209,7 +209,7 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(
             {(r["apiGroups"][0], res) for r in cluster for res in r["resources"]},
             {
-                ("", "nodes"), ("metrics.k8s.io", "nodes"),
+                ("", "nodes"), ("", "persistentvolumeclaims"), ("", "nodes/stats"), ("storage.k8s.io", "volumeattachments"), ("metrics.k8s.io", "nodes"),
                 ("postgres-operator.crunchydata.com", "postgresclusters"),
                 ("cert-manager.io", "certificates"), ("cert-manager.io", "certificaterequests"),
                 ("cert-manager.io", "issuers"), ("cert-manager.io", "clusterissuers"),
@@ -218,7 +218,8 @@ class ChartTests(unittest.TestCase):
                 ("external-secrets.io", "secretstores"), ("external-secrets.io", "clustersecretstores"),
             },
         )
-        self.assertTrue(all(r["verbs"] == ["get", "list"] for r in cluster))
+        self.assertTrue(all(r["verbs"] == ["get", "list"] for r in cluster if r["resources"] != ["nodes/stats"]))
+        self.assertIn({"apiGroups": [""], "resources": ["nodes/stats"], "resourceNames": ["worker"], "verbs": ["get"]}, cluster)
         roles = {(r["metadata"]["namespace"], r["metadata"]["name"]): r["rules"] for r in kind(docs, "Role")}
         readers = {ns: {(rule["apiGroups"][0], res) for rule in rs for res in rule["resources"]} for (ns, name), rs in roles.items() if name.endswith("-reader")}
         self.assertEqual(readers, {
@@ -265,6 +266,18 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(only["argocd"], {("Role", "argocd", "argoproj.io", "applications", "list")})
         self.assertEqual({p for p in everything if p[3] == "configmaps"}, {("Role", "argus", "", "configmaps", "get"), ("Role", "argus", "", "configmaps", "update")})
         self.assertTrue({p for p in everything if p[3] == "configmaps"} <= only["pgbackrest"])
+
+    def test_pvc_inventory_required_before_permissions_render(self):
+        for values in (
+            {"checks": {"pvcs": {"enabled": True}}},
+            {"checks": {"pvcs": {"enabled": True, "expectedNodes": ["worker"], "storageClasses": []}}},
+            {"rbac": {"create": False}, "checks": {"pvcs": {"enabled": True}}},
+        ):
+            with self.assertRaises(AssertionError):
+                render_values(values)
+        values = all_checks_values()
+        values["checks"]["pvcs"]["allowUnmounted"] = []
+        self.assertFalse(any(p[3] == "volumeattachments" for p in permissions(render_values(values))))
 
     def test_bundle_rbac_only_when_bundles_are_expected(self):
         values = all_checks_values()

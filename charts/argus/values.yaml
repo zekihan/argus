@@ -57,6 +57,14 @@ config:
 # Each check is disabled by default and gets RBAC only when enabled. Every key
 # other than "enabled" is passed to the check's configuration section.
 checks:
+  pvcs:
+    enabled: false
+    storageClasses: [longhorn]
+    # Only these claims may lack statistics while no VolumeAttachment exists.
+    allowUnmounted: []
+    expectedNodes: []
+    usedPercent: 80
+    maxStatsAgeSeconds: 300
   hosts:
     enabled: false
     user: argus

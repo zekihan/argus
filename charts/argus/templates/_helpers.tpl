@@ -120,6 +120,12 @@ permissions of the enabled checks, as JSON.
 {{- define "argus.clusterRules" -}}
 {{- $groups := dict -}}
 {{- $checks := .Values.checks -}}
+{{- if $checks.pvcs.enabled -}}
+{{- include "argus.addGroup" (list $groups "" "nodes" "persistentvolumeclaims") -}}
+{{- if $checks.pvcs.allowUnmounted -}}
+{{- include "argus.addGroup" (list $groups "storage.k8s.io" "volumeattachments") -}}
+{{- end -}}
+{{- end -}}
 {{- if $checks.nodes.enabled -}}
 {{- include "argus.addGroup" (list $groups "" "nodes") -}}
 {{- if ne (toString $checks.nodes.metrics) "false" -}}

@@ -194,3 +194,26 @@ func TestStartupErrorsUseFixedDescriptions(t *testing.T) {
 		}
 	}
 }
+
+func TestPVCConfigDefaultsAndValidation(t *testing.T) {
+	valid := `{"checks":{"pvcs":{"storageClasses":["longhorn"],"expectedNodes":["worker"]}}}`
+	c, err := Parse([]byte(valid))
+	if err != nil || c.Checks.PVCs.UsedPercent != 80 || c.Checks.PVCs.MaxStatsAgeSeconds != 300 {
+		t.Fatal(c, err)
+	}
+	for _, mutate := range []func(*PVCs){
+		func(p *PVCs) { p.StorageClasses = nil },
+		func(p *PVCs) { p.ExpectedNodes = nil },
+		func(p *PVCs) { p.ExpectedNodes = []string{"worker", "worker"} },
+		func(p *PVCs) { p.UsedPercent = 101 },
+		func(p *PVCs) { p.UsedPercent = -1 },
+		func(p *PVCs) { p.MaxStatsAgeSeconds = -1 },
+		func(p *PVCs) { p.Expected = []NamespacedName{{Namespace: "db", Name: "../../secret"}} },
+	} {
+		c, _ := Parse([]byte(valid))
+		mutate(c.Checks.PVCs)
+		if c.Validate() == nil {
+			t.Fatal(c.Checks.PVCs)
+		}
+	}
+}

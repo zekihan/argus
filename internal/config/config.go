@@ -63,6 +63,16 @@ type PGBackRest struct {
 	Clusters      []Cluster `json:"clusters"`
 }
 
+type PVCs struct {
+	Schedule
+	StorageClasses     []string         `json:"storageClasses"`
+	ExpectedNodes      []string         `json:"expectedNodes"`
+	Expected           []NamespacedName `json:"expected,omitempty"`
+	AllowUnmounted     []NamespacedName `json:"allowUnmounted,omitempty"`
+	UsedPercent        int              `json:"usedPercent,omitempty"`
+	MaxStatsAgeSeconds int              `json:"maxStatsAgeSeconds,omitempty"`
+}
+
 type Postgres struct {
 	Schedule
 	Clusters []NamespacedName `json:"clusters"`
@@ -165,6 +175,7 @@ type Hosts struct {
 
 // Checks holds one optional section per check. An absent section disables it.
 type Checks struct {
+	PVCs            *PVCs            `json:"pvcs,omitempty"`
 	Hosts           *Hosts           `json:"hosts,omitempty"`
 	Nodes           *Nodes           `json:"nodes,omitempty"`
 	Postgres        *Postgres        `json:"postgres,omitempty"`
@@ -228,6 +239,10 @@ func Parse(data []byte) (Config, error) {
 // ApplyDefaults fills optional fields with their documented defaults.
 func (c *Config) ApplyDefaults() {
 	k := &c.Checks
+	if p := k.PVCs; p != nil {
+		p.UsedPercent = orDefault(p.UsedPercent, 80)
+		p.MaxStatsAgeSeconds = orDefault(p.MaxStatsAgeSeconds, 300)
+	}
 	if p := k.PGBackRest; p != nil && p.MaxAgeSeconds == 0 {
 		p.MaxAgeSeconds = 28800
 	}
@@ -394,6 +409,7 @@ func (c Config) Enabled() []EnabledCheck {
 			out = append(out, EnabledCheck{Name: name, Schedule: s(), validate: v})
 		}
 	}
+	add(k.PVCs != nil, "pvcs", func() Schedule { return k.PVCs.Schedule }, func() error { return k.PVCs.validate() })
 	add(k.Hosts != nil, "hosts", func() Schedule { return k.Hosts.Schedule }, func() error { return k.Hosts.validate() })
 	add(k.Nodes != nil, "nodes", func() Schedule { return k.Nodes.Schedule }, func() error { return k.Nodes.validate() })
 	add(k.Postgres != nil, "postgres", func() Schedule { return k.Postgres.Schedule }, func() error { return k.Postgres.validate() })
@@ -771,4 +787,23 @@ func foldKey(key string) string {
 		}
 		return folded
 	}, key)
+}
+
+func (p *PVCs) validate() error {
+	if err := uniqueNames("storageClasses", p.StorageClasses, true, Object); err != nil {
+		return err
+	}
+	if err := uniqueNames("expectedNodes", p.ExpectedNodes, true, Object); err != nil {
+		return err
+	}
+	if err := uniqueNamespaced("expected", p.Expected, false); err != nil {
+		return err
+	}
+	if err := uniqueNamespaced("allowUnmounted", p.AllowUnmounted, false); err != nil {
+		return err
+	}
+	if p.UsedPercent < 1 || p.UsedPercent > 100 {
+		return fmt.Errorf("usedPercent must be between 1 and 100")
+	}
+	return seconds("maxStatsAgeSeconds", p.MaxStatsAgeSeconds, true)
 }

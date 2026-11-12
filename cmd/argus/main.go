@@ -235,6 +235,8 @@ func onlyCheck(all config.Checks, name string) config.Checks {
 	switch name {
 	case "hosts":
 		only.Hosts = all.Hosts
+	case "pvcs":
+		only.PVCs = all.PVCs
 	case "nodes":
 		only.Nodes = all.Nodes
 	case "postgres":

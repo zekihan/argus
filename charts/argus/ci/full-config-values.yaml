@@ -189,6 +189,32 @@
       "automatedOutOfSyncSeconds": 900,
       "manualOutOfSyncSeconds": 604800,
       "progressingSeconds": 900
+    },
+    "pvcs": {
+      "enabled": true,
+      "intervalSeconds": 60,
+      "collectionTimeoutSeconds": 45,
+      "maxSampleAgeSeconds": 180,
+      "storageClasses": [
+        "longhorn"
+      ],
+      "expectedNodes": [
+        "worker"
+      ],
+      "expected": [
+        {
+          "namespace": "database",
+          "name": "pgdata"
+        }
+      ],
+      "usedPercent": 80,
+      "maxStatsAgeSeconds": 300,
+      "allowUnmounted": [
+        {
+          "namespace": "database",
+          "name": "scheduled-job-state"
+        }
+      ]
     }
   }
 }

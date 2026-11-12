@@ -5,6 +5,11 @@ credentials. Namespace Roles (list): only where pod or controller specs would
 otherwise be readable cluster-wide. get/update on the state ConfigMap only.
 No Secrets, pods or nodes/proxy anywhere.
 */ -}}
+{{- if .Values.checks.pvcs.enabled }}
+{{- if or (empty .Values.checks.pvcs.expectedNodes) (empty .Values.checks.pvcs.storageClasses) }}
+{{- fail "checks.pvcs requires non-empty expectedNodes and storageClasses" }}
+{{- end }}
+{{- end }}
 {{- if .Values.rbac.create }}
 {{- $sa := include "argus.serviceAccount" . }}
 {{- $clusterRules := include "argus.clusterRules" . | fromJson }}
@@ -20,6 +25,12 @@ rules:
   - apiGroups: [{{ $group | quote }}]
     resources: {{ get $clusterRules $group | toJson }}
     verbs: [get, list]
+  {{- end }}
+  {{- if .Values.checks.pvcs.enabled }}
+  - apiGroups: [""]
+    resources: [nodes/stats]
+    resourceNames: {{ .Values.checks.pvcs.expectedNodes | toJson }}
+    verbs: [get]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

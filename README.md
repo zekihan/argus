@@ -11,6 +11,7 @@ Argus replaces the homelab's separately deployed monitors with one static Go bin
 
 - pgBackRest backup completion freshness (absorbs [backrestwatch](https://github.com/zekihan/backrestwatch))
 - PostgreSQL cluster health (Crunchy `PostgresCluster`)
+- PVC filesystem fill from verified kubelet statistics (80% default), including pgdata and Redis
 - Longhorn volumes, replicas, backup targets and system backups
 - cert-manager certificates and the shared PostgreSQL PKI
 - External Secrets sync and store readiness
@@ -38,7 +39,7 @@ OutOfSync for more than 15m or 7 days) are tracked in memory and restart with th
 never fails before it has been observed in full, and `observedSinceSeconds` shows how long the
 current pod has watched. With nightly `edge` updates, a 7-day window rarely elapses.
 
-Collections: `hosts`, `nodes`, `postgres`, `pgbackrest`, `longhorn/volumes`, `longhorn/system`,
+Collections: `pvcs`, `hosts`, `nodes`, `postgres`, `pgbackrest`, `longhorn/volumes`, `longhorn/system`,
 `cronjobs`, `certificates`, `pki`, `externalsecrets`, `clusterexternalsecrets`, `secretstores`,
 `clustersecretstores`, `argocd`.
 
