@@ -203,17 +203,33 @@ func Summarize(results map[string]string, order []string) string {
 }
 
 func capJoin(parts []string, separator string) string {
+	size := max(len(parts)-1, 0) * len(separator)
+	for _, part := range parts {
+		size += len(part)
+		if size > summaryLimit {
+			break
+		}
+	}
+	if size <= summaryLimit {
+		return strings.Join(parts, separator)
+	}
+
 	var b strings.Builder
 	for i, part := range parts {
 		more := ""
 		if i < len(parts)-1 {
 			more = fmt.Sprintf("%s+%d more", separator, len(parts)-i-1)
 		}
-		if b.Len()+len(separator)+len(part)+len(more) > summaryLimit && i > 0 {
-			fmt.Fprintf(&b, "%s+%d more", separator, len(parts)-i)
-			break
+		if i == 0 && len(part)+len(more) > summaryLimit {
+			const ellipsis = "..."
+			end := summaryLimit - len(more) - len(ellipsis)
+			return strings.ToValidUTF8(part[:end], "") + ellipsis + more
 		}
 		if i > 0 {
+			if b.Len()+len(separator)+len(part)+len(more) > summaryLimit {
+				fmt.Fprintf(&b, "%s+%d more", separator, len(parts)-i)
+				break
+			}
 			b.WriteString(separator)
 		}
 		b.WriteString(part)
