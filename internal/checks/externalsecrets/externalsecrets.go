@@ -6,9 +6,7 @@ package externalsecrets
 
 import (
 	"context"
-	"fmt"
-	"math"
-	"regexp"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,31 +134,13 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 	return c.Evaluate(sample, now), nil
 }
 
-var durationPart = regexp.MustCompile(`(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)`)
-
-var units = map[string]float64{"h": 3600, "m": 60, "s": 1, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "μs": 1e-6, "ns": 1e-9}
-
-// Duration parses a Go duration string to seconds exactly as sync_monitor.py:
-// "0", or one or more number-unit parts covering the whole value.
+// Duration parses a nonnegative refresh interval using ESO's Go duration format.
 func Duration(value string) (float64, error) {
-	if value == "0" {
-		return 0, nil
+	interval, err := time.ParseDuration(value)
+	if err != nil || strings.HasPrefix(value, "-") {
+		return 0, errors.New("invalid refresh interval")
 	}
-	parts := durationPart.FindAllStringSubmatch(value, -1)
-	var joined strings.Builder
-	total := 0.0
-	for _, p := range parts {
-		joined.WriteString(p[0])
-		number, err := strconv.ParseFloat(p[1], 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid refresh interval")
-		}
-		total += number * units[p[2]]
-	}
-	if len(parts) == 0 || joined.String() != value || math.IsInf(total, 0) {
-		return 0, fmt.Errorf("invalid refresh interval")
-	}
-	return total, nil
+	return interval.Seconds(), nil
 }
 
 func ready(conditions []kube.Condition) string {

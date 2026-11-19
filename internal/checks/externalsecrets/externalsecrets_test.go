@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -122,6 +123,34 @@ func TestZeroIntervalDoesNotRequireRefreshTime(t *testing.T) {
 		if ok, _ := verdict(t, s); !ok {
 			t.Fatal(interval)
 		}
+	}
+}
+
+func TestRefreshIntervalUsesGoDuration(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		interval      string
+		noRefreshTime bool
+		wantCode      int
+		wantRefresh   string
+	}{
+		{"explicit positive sign", "+1h", false, http.StatusOK, "ok"},
+		{"below one nanosecond", "0.1ns", true, http.StatusOK, "n/a"},
+		{"largest duration", "2562047h47m16.854775807s", false, http.StatusOK, "ok"},
+		{"overflow", "2562047h47m16.854775808s", false, http.StatusServiceUnavailable, "invalid_refresh_interval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := healthy(t)
+			s.ExternalSecrets[0].Spec.RefreshInterval = &tc.interval
+			if tc.noRefreshTime {
+				s.ExternalSecrets[0].Status.RefreshTime = nil
+			}
+			h := checktest.New(New(cfg(), &fakeAPI{sample: s}), now).Refresh(t)
+			code, e := h.Get(t, ExternalSecretsRoute+"/apps/example")
+			if code != tc.wantCode || e.Results["refresh"] != tc.wantRefresh {
+				t.Fatalf("status = %d, refresh = %q, want %d, %q", code, e.Results["refresh"], tc.wantCode, tc.wantRefresh)
+			}
+		})
 	}
 }
 
