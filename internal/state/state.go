@@ -207,6 +207,10 @@ func (c *ConfigMap) Write(ctx context.Context, data, version string) (string, er
 	}
 	next[Key] = data
 	updated, err := c.Client.UpdateConfigMap(ctx, c.Namespace, c.Name, c.last, next)
+	// A successful PUT can return a ledger changed by admission.
+	if stored, present := updated.Data[Key]; err == nil && (!present || stored != data) {
+		err = &kube.Error{Code: kube.CodeInvalid}
+	}
 	if err != nil {
 		c.last = kube.ConfigMap{}
 		return "", err
