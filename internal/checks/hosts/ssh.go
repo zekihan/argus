@@ -165,16 +165,21 @@ func (s SSH) Probe(ctx context.Context, host config.Host) Outcome {
 	client := ssh.NewClient(sshConn, channels, requests)
 	defer func() { _ = client.Close() }()
 	outcome := Outcome{SSH: result.OK, SSHLatency: time.Since(start), Exit: -1}
-	session, err := client.NewSession()
-	if err != nil {
-		return Outcome{SSH: result.Reason("session_failed"), Exit: -1}
-	}
-	defer func() { _ = session.Close() }()
 	stdout := &limited{}
-	session.Stdout, session.Stderr = stdout, io.Discard
 	runStart := time.Now()
-	// No command is sent: the authorized key forces the probe.
-	if err := session.Shell(); err != nil {
+	session, err := client.NewSession()
+	if err == nil {
+		defer func() { _ = session.Close() }()
+		session.Stdout, session.Stderr = stdout, io.Discard
+		// No command is sent: the authorized key forces the probe.
+		err = session.Shell()
+	}
+	if err != nil {
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			outcome.Timeout = true
+			outcome.RunLatency = time.Since(runStart)
+			return outcome
+		}
 		return Outcome{SSH: result.Reason("session_failed"), Exit: -1}
 	}
 	err = session.Wait()

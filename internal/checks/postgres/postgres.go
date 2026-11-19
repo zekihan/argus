@@ -115,7 +115,7 @@ func (c *Check) Evaluate(clusters []Cluster, now time.Time) result.Collection {
 				Results: map[string]string{"instances": result.Reason("missing"), "proxy": result.NA, "conditions": result.NA, "scheduled_backups": result.NA}})
 			continue
 		}
-		collection.Items = append(collection.Items, evaluate(e.Key(), cluster))
+		collection.Items = append(collection.Items, evaluate(e.Key(), cluster, now))
 	}
 	for key := range byKey {
 		if !expected[key] {
@@ -133,7 +133,7 @@ func desired(r *int) int {
 	return *r
 }
 
-func evaluate(key string, cluster Cluster) result.Item {
+func evaluate(key string, cluster Cluster, now time.Time) result.Item {
 	results := map[string]string{}
 	values := map[string]any{}
 	status := cluster.Status
@@ -195,24 +195,28 @@ func evaluate(key string, cluster Cluster) result.Item {
 		}
 		results["conditions"] = result.Reason("false", params...)
 	}
-	results["scheduled_backups"] = scheduledBackups(cluster)
+	results["scheduled_backups"] = scheduledBackups(cluster, now)
 	return result.Item{Target: key, Results: result.Set(dimensions, results), Values: values}
 }
 
 // scheduledBackups fails when the latest run of any backup CronJob failed.
-func scheduledBackups(cluster Cluster) string {
+func scheduledBackups(cluster Cluster, now time.Time) string {
 	type run struct {
 		start             time.Time
 		failed, succeeded int
 	}
 	latest := map[string]run{}
 	for _, b := range cluster.Status.PGBackRest.ScheduledBackups {
-		start, err := kube.ParseTime(b.StartTime)
-		if err != nil {
-			start, err = kube.ParseTime(b.CompletionTime)
-			if err != nil {
+		start, startErr := kube.ParseTime(b.StartTime)
+		completion, completionErr := kube.ParseTime(b.CompletionTime)
+		if startErr != nil {
+			if completionErr != nil {
 				continue
 			}
+			start = completion
+		}
+		if start.After(now) || (completionErr == nil && completion.After(now)) {
+			return result.Reason("future_timestamp")
 		}
 		if current, ok := latest[b.CronJobName]; !ok || start.After(current.start) {
 			latest[b.CronJobName] = run{start: start, failed: b.Failed, succeeded: b.Succeeded}

@@ -96,6 +96,34 @@ func TestInstancesProxyConditionsAndBackups(t *testing.T) {
 	}
 }
 
+func TestScheduledBackupTimestampAgainstCollectionTime(t *testing.T) {
+	past := now.Add(-time.Second).Format(time.RFC3339)
+	present := now.Format(time.RFC3339)
+	future := now.Add(time.Second).Format(time.RFC3339)
+	for _, tc := range []struct {
+		name, start, completion string
+		want                    string
+		status                  int
+	}{
+		{"future start", future, "", "future_timestamp", 503},
+		{"future completion", past, future, "future_timestamp", 503},
+		{"future completion without start", "", future, "future_timestamp", 503},
+		{"completed at collection time without start", "", present, "ok", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := decode(t, clusterJSON)
+			// The later success record would otherwise supersede a failed run.
+			backups := cluster.Status.PGBackRest.ScheduledBackups
+			backups[2].StartTime, backups[2].CompletionTime = tc.start, tc.completion
+			h, results := run(t, cluster)
+			code, _ := h.Get(t, Route)
+			if got := results["scheduled_backups"]; got != tc.want || code != tc.status {
+				t.Fatalf("scheduled_backups = %q, aggregate status = %d, want %q and %d", got, code, tc.want, tc.status)
+			}
+		})
+	}
+}
+
 func TestInventoryDriftBothWays(t *testing.T) {
 	other := decode(t, clusterJSON)
 	other.Metadata.Namespace, other.Metadata.Name = "app", "app"

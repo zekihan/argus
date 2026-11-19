@@ -43,10 +43,12 @@ func probeJSON(t *testing.T, values map[string]string) []byte {
 }
 
 type behaviour struct {
-	stdout []byte
-	stderr string
-	exit   uint32
-	hang   bool
+	stdout  []byte
+	stderr  string
+	exit    uint32
+	hang    bool
+	stallAt string
+	onStall func()
 }
 
 type server struct {
@@ -98,6 +100,10 @@ func startServer(t *testing.T, host ssh.Signer, authorized ssh.PublicKey, b beha
 				}
 				go ssh.DiscardRequests(requests)
 				for newChannel := range channels {
+					if b.stallAt == "session" {
+						b.onStall()
+						continue
+					}
 					channel, reqs, err := newChannel.Accept()
 					if err != nil {
 						return
@@ -108,6 +114,10 @@ func startServer(t *testing.T, host ssh.Signer, authorized ssh.PublicKey, b beha
 						s.mu.Unlock()
 						if req.Type != "shell" && req.Type != "exec" {
 							_ = req.Reply(false, nil)
+							continue
+						}
+						if b.stallAt == req.Type {
+							b.onStall()
 							continue
 						}
 						_ = req.Reply(true, nil)
@@ -263,6 +273,23 @@ func TestProbeExitOutputAndTimeout(t *testing.T) {
 			}
 			if item.Results[tc.dim] != tc.want {
 				t.Fatal(item.Results)
+			}
+		})
+	}
+}
+
+func TestProbeCancellationDuringSessionSetup(t *testing.T) {
+	for _, phase := range []string{"session", "shell"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newFixture(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			s := startServer(t, f.host, f.client.PublicKey(), behaviour{stallAt: phase, onStall: cancel})
+			f.pin(t, s.address, f.host.PublicKey())
+			host := config.Host{Name: "host", Address: s.address}
+			item := Evaluate(host, f.prober().Probe(ctx, host))
+			if item.Results["ssh"] != "ok" || item.Results["script"] != "timeout" || item.Results["disk"] != "unknown" {
+				t.Fatalf("unexpected results after cancellation during %s: %v", phase, item.Results)
 			}
 		})
 	}
