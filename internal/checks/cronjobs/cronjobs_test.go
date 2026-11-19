@@ -155,6 +155,33 @@ func TestRunHistoryDetailDoesNotAffectParity(t *testing.T) {
 	h.NoLeak(t, "hunter2")
 }
 
+func TestActiveJobWithoutStartTimeUsesCreationTime(t *testing.T) {
+	c := cron(t, "a", "b", `{"status":{"lastSuccessfulTime":"2026-11-05T22:30:00Z"}}`)
+	for _, tc := range []struct {
+		name    string
+		created string
+		fields  string
+		code    int
+		active  string
+	}{
+		{"overdue", "2026-11-05T22:59:59Z", "", 503, "stuck(1, max 1h0m)"},
+		{"at limit", "2026-11-05T23:00:00Z", "", 200, "ok"},
+		{"recently started", "2026-11-05T22:59:59Z", `,"status":{"startTime":"2026-11-05T23:30:00Z"}`, 200, "ok"},
+		{"suspended", "2026-11-05T22:59:59Z", `,"spec":{"suspend":true}`, 200, "ok"},
+		{"resuming", "2026-11-05T22:59:59Z", `,"status":{"conditions":[{"type":"Suspended","status":"True"}]}`, 200, "ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := decode[Job](t, `{"metadata":{"name":"b-1","namespace":"a","creationTimestamp":"`+tc.created+`",
+				"ownerReferences":[{"kind":"CronJob","uid":"cron-uid","controller":true}]}`+tc.fields+`}`)
+			api := &fakeAPI{sample: Sample{CronJobs: []CronJob{c}, Jobs: []Job{j}}}
+			h := checktest.New(New(inventory("a", "b", 10800), api), now).Refresh(t)
+			if code, e := h.Get(t, Route+"/a/b"); code != tc.code || e.Results["last_success"] != "ok" || e.Results["active"] != tc.active {
+				t.Fatalf("HTTP %d, results %v", code, e.Results)
+			}
+		})
+	}
+}
+
 func TestMissingCronJobFailsClosed(t *testing.T) {
 	h := checktest.New(New(inventory("a", "b", 10800), &fakeAPI{}), now).Refresh(t)
 	code, e := h.Get(t, Route+"/a/b")
