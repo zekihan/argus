@@ -26,11 +26,11 @@ func (p Profile) Assess(certificates []Certificate, now time.Time) ([]result.Ite
 	rootPresent := false
 	for _, cert := range certificates {
 		meta := cert.Metadata
-		if meta.Name != p.RootName && cert.Spec.IssuerRef.Name != p.IssuerName {
+		isRoot := meta.Name == p.RootName && meta.Namespace == p.RootNamespace
+		if !isRoot && cert.Spec.IssuerRef.Name != p.IssuerName {
 			continue
 		}
 		status := cert.status()
-		isRoot := meta.Name == p.RootName && meta.Namespace == p.RootNamespace
 		isCA := cert.Spec.IsCA
 		results := map[string]string{"ca_key_pinned": result.NA, "issuer_lifetime": result.NA, "ca_renewal": result.NA}
 		values := map[string]any{"isCA": isCA}
