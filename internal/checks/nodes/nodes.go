@@ -43,7 +43,10 @@ const metricsMaxAge = 5 * time.Minute
 
 type LonghornNode struct {
 	Metadata kube.Metadata `json:"metadata"`
-	Status   struct {
+	Spec     struct {
+		Disks map[string]struct{} `json:"disks"`
+	} `json:"spec"`
+	Status struct {
 		Conditions []kube.Condition `json:"conditions"`
 		DiskStatus map[string]struct {
 			Conditions       []kube.Condition `json:"conditions"`
@@ -281,14 +284,20 @@ func (c *Check) longhornDisk(l LonghornNode, values map[string]any) string {
 	// The Longhorn node's Schedulable condition turns False as soon as the
 	// Kubernetes node is cordoned; cordons are judged by schedulable, with
 	// its drain window, so only disk readiness and space are checked here.
-	names := make([]string, 0, len(l.Status.DiskStatus))
-	for name := range l.Status.DiskStatus {
+	if len(l.Spec.Disks) == 0 {
+		return result.Reason("no_disks")
+	}
+	names := make([]string, 0, len(l.Spec.Disks))
+	for name := range l.Spec.Disks {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	var available, maximum int64
 	for _, name := range names {
-		disk := l.Status.DiskStatus[name]
+		disk, ok := l.Status.DiskStatus[name]
+		if !ok {
+			return result.Reason("disk_status_missing")
+		}
 		available += disk.StorageAvailable
 		maximum += disk.StorageMaximum
 		if !kube.ConditionTrue(disk.Conditions, "Ready") {
@@ -304,9 +313,6 @@ func (c *Check) longhornDisk(l LonghornNode, values map[string]any) string {
 		if free < float64(c.config.LonghornMinAvailablePercent) {
 			return result.Reason("low_space", result.Name(name), result.Labeled("free", result.Pct(free)), result.Labeled("min", result.Pct(float64(c.config.LonghornMinAvailablePercent))))
 		}
-	}
-	if len(names) == 0 {
-		return result.Reason("no_disks")
 	}
 	if maximum > 0 {
 		values["longhornStoragePercent"] = float64(maximum-available) / float64(maximum) * 100

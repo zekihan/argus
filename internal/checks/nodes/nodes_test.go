@@ -35,7 +35,7 @@ func metrics(name, cpu, memory string) NodeMetrics {
 
 func longhornNode(t *testing.T, name string, available int64) LonghornNode {
 	var l LonghornNode
-	body := `{"metadata":{"name":"` + name + `"},"status":{"conditions":[{"type":"Ready","status":"True"},{"type":"Schedulable","status":"True"}],
+	body := `{"metadata":{"name":"` + name + `"},"spec":{"disks":{"permanent":{"path":"/var/lib/longhorn"}}},"status":{"conditions":[{"type":"Ready","status":"True"},{"type":"Schedulable","status":"True"}],
 	"diskStatus":{"permanent":{"conditions":[{"type":"Ready","status":"True","message":"Disk /var/lib/longhorn ready"},{"type":"Schedulable","status":"True"}],"storageAvailable":` +
 		jsonInt(available) + `,"storageMaximum":67049664512}}}}`
 	if err := json.Unmarshal([]byte(body), &l); err != nil {
@@ -194,6 +194,31 @@ func TestUsageAndLonghornDisks(t *testing.T) {
 	s.Longhorn[0].Status.DiskStatus["permanent"] = disk
 	if got := evaluate(t, check, s, now, "agent")["longhorn_disk"]; got != "disk_not_ready(permanent)" {
 		t.Fatal(got)
+	}
+}
+
+func TestLonghornRequiresStatusForEachConfiguredDisk(t *testing.T) {
+	s := healthy(t)
+	l := &s.Longhorn[0]
+	if err := json.Unmarshal([]byte(`{"spec":{"disks":{"permanent":{"path":"/test/permanent"},"added":{"path":"/test/added"}}}}`), l); err != nil {
+		t.Fatal(err)
+	}
+	l.Status.DiskStatus["removed"] = l.Status.DiskStatus["permanent"]
+	h := checktest.New(New(cfg(), &fakeAPI{sample: s}), now).Refresh(t)
+	if code, e := h.Get(t, Route+"/agent"); code != 503 || e.Results["longhorn_disk"] != "disk_status_missing" {
+		t.Fatalf("node with unreported disk: HTTP %d, results %v", code, e.Results)
+	}
+	if code, e := h.Get(t, Route); code != 503 || e.Results["longhorn_disk"] != "1 failing: agent" {
+		t.Fatalf("aggregate with unreported disk: HTTP %d, results %v", code, e.Results)
+	}
+
+	l.Status.DiskStatus["added"] = l.Status.DiskStatus["permanent"]
+	removed := l.Status.DiskStatus["removed"]
+	removed.Conditions = nil
+	l.Status.DiskStatus["removed"] = removed
+	h.Refresh(t)
+	if code, e := h.Get(t, Route); code != 200 || e.Results["longhorn_disk"] != "ok" {
+		t.Fatalf("aggregate after disk reports status: HTTP %d, results %v", code, e.Results)
 	}
 }
 
