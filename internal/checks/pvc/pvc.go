@@ -184,6 +184,13 @@ func (c *Check) Evaluate(s Sample, now time.Time) result.Collection {
 			item.Results["bound"] = result.Reason("not_bound")
 		}
 		measurements := stats[key]
+		if created, err := kube.ParseTime(claim.Metadata.CreationTimestamp); err == nil {
+			// Kubelet reports the claim name and namespace without its UID.
+			measurements = slices.DeleteFunc(measurements, func(v VolumeStats) bool {
+				measured, err := kube.ParseTime(v.Time)
+				return err == nil && measured.Before(created)
+			})
+		}
 		// Reuse only an absent measurement, never an invalid replacement, and
 		// never across a deleted/recreated PVC. The original timestamp expires it.
 		cacheKey := key + "/" + claim.Metadata.UID
