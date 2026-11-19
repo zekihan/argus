@@ -141,11 +141,12 @@ func (r *Renewals) certificate(cert Certificate, requests []CertificateRequest, 
 			transition = cert.Metadata.CreationTimestamp
 		}
 		since, err := kube.ParseTime(transition)
+		age := now.Sub(since)
 		switch {
-		case err != nil:
+		case err != nil || age < 0:
 			results["ready"] = result.Reason("not_ready")
-		case now.Sub(since) > time.Duration(r.config.NotReadySeconds)*time.Second:
-			results["ready"] = result.Reason("not_ready", result.Labeled("for", result.Dur(now.Sub(since).Seconds())))
+		case age > time.Duration(r.config.NotReadySeconds)*time.Second:
+			results["ready"] = result.Reason("not_ready", result.Labeled("for", result.Dur(age.Seconds())))
 		}
 	}
 	if status.RenewalTime != nil && *status.RenewalTime != "" {

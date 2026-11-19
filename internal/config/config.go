@@ -259,11 +259,14 @@ func Load(path string) (Config, error) {
 	return Parse(data)
 }
 
-// Parse strictly decodes, defaults and validates configuration JSON.
+// Parse strictly decodes, defaults and validates a JSON configuration object.
 func Parse(data []byte) (Config, error) {
 	c := Default()
 	if err := UniqueJSON(data); err != nil {
 		return c, fmt.Errorf("invalid configuration JSON: %s", JSONProblem(err))
+	}
+	if !bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
+		return c, fmt.Errorf("configuration must be a JSON object")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
