@@ -336,11 +336,7 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		if ctx.Err() != nil {
 			return nil, false, &Error{Code: CodeTimeout, Path: path}
 		}
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, true, &Error{Code: CodeTimeout, Path: path}
-		}
-		return nil, true, &Error{Code: CodeUnreachable, Path: path}
+		return nil, true, transportError(path, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
@@ -366,9 +362,17 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		return nil, false, &Error{Code: CodeBudget, Path: path}
 	}
 	if err != nil {
-		return nil, ctx.Err() == nil, &Error{Code: CodeUnreachable, Path: path}
+		return nil, ctx.Err() == nil, transportError(path, err)
 	}
 	return data, false, nil
+}
+
+func transportError(path string, err error) *Error {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return &Error{Code: CodeTimeout, Path: path}
+	}
+	return &Error{Code: CodeUnreachable, Path: path}
 }
 
 // ConfigMap is a ConfigMap read for a conditional update. Every field other
