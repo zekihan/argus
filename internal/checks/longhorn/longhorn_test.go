@@ -199,6 +199,25 @@ func TestDegradedAndFaultedVolume(t *testing.T) {
 	}
 }
 
+func TestUnknownVolumeRobustnessRequiresDetachedState(t *testing.T) {
+	for _, state := range []string{"attaching", "detaching", ""} {
+		t.Run("state="+state, func(t *testing.T) {
+			s := healthy(t)
+			s.Volumes[0].Status.Robustness, s.Volumes[0].Status.State = "unknown", state
+			h := checktest.New(New(cfg, &fakeAPI{sample: s}), now).Refresh(t)
+			const target = "bazarr/bazarr-state"
+			code, item := h.Get(t, VolumesRoute+"/"+target)
+			if code != http.StatusServiceUnavailable || item.Results["robustness"] != "unknown" || item.Results["state"] != "ok" {
+				t.Errorf("item HTTP %d, results %v", code, item.Results)
+			}
+			code, aggregate := h.Get(t, VolumesRoute)
+			if code != http.StatusServiceUnavailable || aggregate.Results["robustness"] != "1 failing: "+target {
+				t.Errorf("aggregate HTTP %d, results %v", code, aggregate.Results)
+			}
+		})
+	}
+}
+
 func TestDetailDimensions(t *testing.T) {
 	s := healthy(t)
 	v := &s.Volumes[0]
