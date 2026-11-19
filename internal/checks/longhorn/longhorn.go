@@ -254,7 +254,7 @@ func (c *Check) volume(key string, v Volume, replicas []Replica, now time.Time) 
 	case robustness == "degraded" || robustness == "faulted":
 		// Failing whether or not the volume is attached, as backup_monitor.py does.
 		results["robustness"] = result.Reason(robustness)
-	case robustness == "unknown" && !attached:
+	case robustness == "unknown" && v.Status.State == "detached":
 		results["robustness"] = result.NA
 	default:
 		results["robustness"] = result.Reason("unknown")
