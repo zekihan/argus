@@ -79,6 +79,16 @@ func run(args []string, stdout io.Writer, logger *slog.Logger) error {
 	}
 }
 
+func parseCommandFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("%s does not take positional arguments", fs.Name())
+	}
+	return nil
+}
+
 type apiFlags struct {
 	url, tokenFile, caFile *string
 }
@@ -108,7 +118,7 @@ func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 	configFile := fs.String("config", "/config/config.json", "Strict JSON configuration file")
 	checkConfig := fs.Bool("check-config", false, "Validate configuration and exit without contacting Kubernetes")
 	api := addAPIFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*configFile)
@@ -165,7 +175,7 @@ func once(args []string, stdout io.Writer, logger *slog.Logger) error {
 	name := fs.String("check", "", "Check to run: a configured check name, or pki-lifecycle")
 	snapshot := fs.String("snapshot", "", "pki-lifecycle only: offline CertificateList JSON (kubectl get certificates -A -o json)")
 	api := addAPIFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if *name == "" {
@@ -270,7 +280,7 @@ func printJSON(stdout io.Writer, value any) error {
 func validateState(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("state validate", flag.ContinueOnError)
 	file := fs.String("file", "", "Exported ledger (backrestwatch evidence.json) to validate before import")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if *file == "" {
