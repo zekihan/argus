@@ -384,3 +384,12 @@ func TestStateValidateAndCheckConfig(t *testing.T) {
 		t.Fatal(code, stdout)
 	}
 }
+
+func TestCheckConfigRejectsNullDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	write(t, path, []byte(" \nnull\n"))
+	code, stdout, stderr := run(t, "serve", "-config", path, "-check-config")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "configuration must be a JSON object") {
+		t.Fatalf("exit code %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+}
