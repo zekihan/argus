@@ -102,16 +102,17 @@ func Time(t time.Time) Param { return Param{t.UTC().Format(time.RFC3339)} }
 
 var nameUnsafe = regexp.MustCompile(`[^A-Za-z0-9._/:@+=-]`)
 
+const maxNameLength = 253
+
 // Name formats an object name, condition type or mount path. Characters
 // outside a conservative set are replaced and the value is capped.
 func Name(s string) Param { return Param{SafeName(s)} }
 
 // SafeName sanitises an identifier for use in results and values.
-func SafeName(s string) string {
-	if len(s) > 253 {
-		s = s[:253]
-	}
-	return nameUnsafe.ReplaceAllString(s, "_")
+func SafeName(s string) string { return safeName(s, maxNameLength) }
+
+func safeName(s string, limit int) string {
+	return nameUnsafe.ReplaceAllString(s[:min(len(s), limit)], "_")
 }
 
 // ProbeText passes through one fixed host-probe field: printable ASCII only,
@@ -202,17 +203,33 @@ func Summarize(results map[string]string, order []string) string {
 }
 
 func capJoin(parts []string, separator string) string {
+	size := max(len(parts)-1, 0) * len(separator)
+	for _, part := range parts {
+		size += len(part)
+		if size > summaryLimit {
+			break
+		}
+	}
+	if size <= summaryLimit {
+		return strings.Join(parts, separator)
+	}
+
 	var b strings.Builder
 	for i, part := range parts {
 		more := ""
 		if i < len(parts)-1 {
 			more = fmt.Sprintf("%s+%d more", separator, len(parts)-i-1)
 		}
-		if b.Len()+len(separator)+len(part)+len(more) > summaryLimit && i > 0 {
-			fmt.Fprintf(&b, "%s+%d more", separator, len(parts)-i)
-			break
+		if i == 0 && len(part)+len(more) > summaryLimit {
+			const ellipsis = "..."
+			end := summaryLimit - len(more) - len(ellipsis)
+			return strings.ToValidUTF8(part[:end], "") + ellipsis + more
 		}
 		if i > 0 {
+			if b.Len()+len(separator)+len(part)+len(more) > summaryLimit {
+				fmt.Fprintf(&b, "%s+%d more", separator, len(parts)-i)
+				break
+			}
 			b.WriteString(separator)
 		}
 		b.WriteString(part)
@@ -349,9 +366,11 @@ func Inventory(missing, unexpected []string) string {
 }
 
 func sanitized(names []string) []string {
+	// An inventory target can include a namespace before its object name.
+	const maxTargetLength = 63 + 1 + maxNameLength
 	out := make([]string, len(names))
 	for i, name := range names {
-		out[i] = SafeName(name)
+		out[i] = safeName(name, maxTargetLength)
 	}
 	return out
 }

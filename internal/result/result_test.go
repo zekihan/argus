@@ -110,3 +110,39 @@ func TestInventoryAndSet(t *testing.T) {
 		t.Fatal("forgotten dimension passed", got)
 	}
 }
+
+func TestInventoryPreservesQualifiedTargets(t *testing.T) {
+	namespace := strings.Repeat("n", 63)
+	namePrefix := strings.Repeat(strings.Repeat("a", 63)+".", 3) + strings.Repeat("b", 60)
+	missing := namespace + "/" + namePrefix + "c"
+	unexpected := namespace + "/" + namePrefix + "d"
+	want := "missing(1): " + missing + "; unexpected(1): " + unexpected
+	if got := Inventory([]string{missing}, []string{unexpected}); got != want {
+		t.Fatalf("inventory = %q, want %q", got, want)
+	}
+}
+
+func TestAggregateCapsSummaryForLargeInventory(t *testing.T) {
+	name := strings.Repeat(strings.Repeat("a", 63)+".", 3) + strings.Repeat("b", 60)
+	inventory := Inventory([]string{name + "c"}, []string{name + "d"})
+	c := Collection{Route: "longhorn/system", Check: "longhorn/system", Singleton: true,
+		Results: map[string]string{"inventory": inventory, "backup_targets": "no_backup_targets"}}
+
+	envelope := c.Aggregate(OK, now, now)
+	if len(envelope.Summary) > summaryLimit {
+		t.Fatalf("summary is %d bytes, want at most %d", len(envelope.Summary), summaryLimit)
+	}
+	if envelope.Healthy || envelope.Results["inventory"] != inventory ||
+		!strings.HasPrefix(envelope.Summary, "inventory: missing(1): ") ||
+		!strings.HasSuffix(envelope.Summary, "...; +1 more") {
+		t.Fatalf("unexpected envelope: %+v", envelope)
+	}
+}
+
+func TestSummaryKeepsResultsThatFit(t *testing.T) {
+	first := strings.Repeat("x", summaryLimit-len("a: ; b: bad"))
+	want := "a: " + first + "; b: bad"
+	if got := Summarize(map[string]string{"a": first, "b": "bad"}, nil); got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
