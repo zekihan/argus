@@ -375,6 +375,19 @@ class ChartTests(unittest.TestCase):
         role, binding = kind(docs, "ClusterRole")[0], kind(docs, "ClusterRoleBinding")[0]
         self.assertEqual(role["metadata"]["name"], binding["roleRef"]["name"])
 
+    def test_reader_rbac_names_are_unique_across_release_namespaces(self):
+        names = []
+        for namespace in ("argus", "argus-preview"):
+            docs = render(namespace=namespace, values=ALL_CHECKS)
+            role = next(d for d in kind(docs, "Role") if d["metadata"]["namespace"] == "argocd")
+            binding = next(d for d in kind(docs, "RoleBinding") if d["metadata"]["namespace"] == "argocd")
+            name = role["metadata"]["name"]
+            self.assertEqual(binding["metadata"]["name"], name)
+            self.assertEqual(binding["roleRef"]["name"], name)
+            self.assertEqual(binding["subjects"], [{"kind": "ServiceAccount", "name": "argus", "namespace": namespace}])
+            names.append(name)
+        self.assertNotEqual(names[0], names[1])
+
 
 if __name__ == "__main__":
     unittest.main()

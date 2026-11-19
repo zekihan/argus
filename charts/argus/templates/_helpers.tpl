@@ -4,10 +4,15 @@
 {{- define "argus.fullname" -}}
 {{- default .Release.Name .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
-{{- define "argus.clusterRoleName" -}}
-{{- $identity := toJson (list .Release.Namespace (include "argus.fullname" .)) -}}
-{{- $prefix := printf "%s-%s" .Release.Namespace (include "argus.fullname" .) | trunc 46 | trimSuffix "-" -}}
-{{- printf "%s-%s" $prefix (sha256sum $identity | trunc 16) -}}
+{{- define "argus.rbacName" -}}
+{{- $root := index . 0 -}}
+{{- $fullname := include "argus.fullname" $root -}}
+{{- $identity := toJson (list $root.Release.Namespace $fullname) -}}
+{{- $hash := sha256sum $identity | trunc 16 -}}
+{{- $suffix := printf "-%s%s" $hash (index . 1) -}}
+{{- $prefixLimit := sub 63 (len $suffix) | int -}}
+{{- $prefix := printf "%s-%s" $root.Release.Namespace $fullname | trunc $prefixLimit | trimSuffix "-" -}}
+{{- printf "%s%s" $prefix $suffix -}}
 {{- end -}}
 {{- define "argus.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "argus.name" . }}
