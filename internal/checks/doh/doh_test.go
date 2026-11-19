@@ -3,8 +3,10 @@ package doh
 import (
 	"context"
 	"encoding/binary"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,5 +88,80 @@ func TestWireResponses(t *testing.T) {
 				t.Fatalf("got %v, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestProbeDetectsResolverFailureAfterSuccess(t *testing.T) {
+	dns, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reject atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var packet [512]byte
+		for {
+			n, client, err := dns.ReadFrom(packet[:])
+			if err != nil {
+				return
+			}
+			_, off, ok := readName(packet[:n], 12)
+			if !ok || off+4 > n {
+				t.Error("invalid resolver question")
+				continue
+			}
+			reply := append([]byte(nil), packet[:off+4]...)
+			reply[2], reply[3] = 0x81, 0x80
+			// Keep only the question, omitting any EDNS request data.
+			clear(reply[6:12])
+			if reject.Load() {
+				reply[3] = 0x83 // NXDOMAIN
+			} else if binary.BigEndian.Uint16(reply[off:off+2]) == 1 {
+				reply[7] = 1 // One A record for the loopback HTTPS server.
+				reply = append(reply, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 127, 0, 0, 1)
+			}
+			if _, err := dns.WriteTo(reply, client); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = dns.Close()
+		<-done
+	})
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(noerror())
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(config.DoH{
+		URL:          "https://" + net.JoinHostPort("probe.example.com.", port) + "/dns-query",
+		Name:         "one.one.one.one",
+		ExpectedIPv4: "1.1.1.1",
+		DNSResolver:  dns.LocalAddr().String(),
+	})
+	c.client.Transport.(*http.Transport).TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig
+
+	for _, tc := range []struct {
+		reject bool
+		want   string
+	}{
+		{false, result.OK},
+		{true, "invalid_response"},
+		{false, result.OK},
+	} {
+		reject.Store(tc.reject)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		got, err := c.Collect(ctx, time.Now)
+		cancel()
+		if err != nil || got[0].Results["answer"] != tc.want {
+			t.Fatalf("resolver rejects queries: %t, got %v, %v, want %s", tc.reject, got, err, tc.want)
+		}
 	}
 }
