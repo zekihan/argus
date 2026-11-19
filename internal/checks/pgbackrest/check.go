@@ -225,7 +225,8 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 			break
 		}
 		c.persisted = stored
-		c.ledger = adopt(stored, c.ledger)
+		// A rolled-back ledger can predate the previous destination entirely.
+		c.ledger = adopt(stored, retainInvalidations(c.ledger, next))
 		results, next, err = Evaluate(c.config, sample, c.ledger, now)
 		if err != nil {
 			if next != nil {
