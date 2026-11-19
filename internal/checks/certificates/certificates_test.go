@@ -336,6 +336,38 @@ func TestRenewalEndpoint(t *testing.T) {
 	}
 }
 
+func TestCertificateReadinessGrace(t *testing.T) {
+	cfg := renewalsConfig()
+	cfg.NotReadySeconds = 20
+	check := NewRenewals(cfg, nil)
+	for _, tc := range []struct {
+		name        string
+		age         time.Duration
+		useCreation bool
+		want        string
+	}{
+		{name: "future transition", age: -time.Second, want: "not_ready"},
+		{name: "future creation", age: -time.Second, useCreation: true, want: "not_ready"},
+		{name: "at grace boundary", age: 20 * time.Second, want: "ok"},
+		{name: "past grace boundary", age: 21 * time.Second, want: "not_ready(for 21s)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cert := decode[Certificate](t, siteJSON)
+			timestamp := monitorNow.Add(-tc.age).Format(time.RFC3339)
+			condition := kube.Condition{Type: "Ready", Status: "False", LastTransitionTime: timestamp}
+			if tc.useCreation {
+				condition.LastTransitionTime = ""
+				cert.Metadata.CreationTimestamp = timestamp
+			}
+			cert.Status.Conditions = []kube.Condition{condition}
+			item := check.Evaluate(Sample{Certificates: []Certificate{cert}}, monitorNow).Items[0]
+			if got := item.Results["ready"]; got != tc.want {
+				t.Fatalf("ready = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInvalidRenewalDataFailsOnlyThatCertificate(t *testing.T) {
 	cert := decode[Certificate](t, `{"metadata":{"namespace":"web","name":"site"},"spec":{"issuerRef":{"name":"letsencrypt"}},"status":null}`)
 	if code, results, _ := renewal(t, cert); code != 503 || results["ready"] != "1 failing: web/site" {
