@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
@@ -124,6 +125,30 @@ func TestAuthorizationOnEveryRouteButHealthz(t *testing.T) {
 		if recorder.Code != code || (method == "HEAD" && recorder.Body.Len() != 0) {
 			t.Fatal(method, recorder.Code)
 		}
+	}
+}
+
+type unencodableRoutes struct{ fakeRoutes }
+
+func (unencodableRoutes) Lookup(string, time.Time) (int, any) {
+	return http.StatusOK, result.Envelope{Healthy: true, Values: map[string]any{"memoryAllocatable": math.Inf(1)}}
+}
+
+func TestUnencodableResponseFailsClosed(t *testing.T) {
+	handler := Handler(unencodableRoutes{}, writeToken(t, testToken))
+	for method, wantBody := range map[string]string{
+		http.MethodGet:  "{\"reason\":\"response_encoding_error\"}\n",
+		http.MethodHead: "",
+	} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/v1/things/ns/a", nil)
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != http.StatusServiceUnavailable || response.Body.String() != wantBody {
+				t.Fatalf("got HTTP %d with body %q, want 503 with body %q", response.Code, response.Body, wantBody)
+			}
+		})
 	}
 }
 

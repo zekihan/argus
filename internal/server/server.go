@@ -24,9 +24,14 @@ type Routes interface {
 }
 
 func write(w http.ResponseWriter, r *http.Request, code int, payload any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		code = http.StatusServiceUnavailable
+		body = []byte(`{"reason":"response_encoding_error"}`)
+	}
 	w.WriteHeader(code)
 	if r.Method != http.MethodHead {
-		_ = json.NewEncoder(w).Encode(payload)
+		_, _ = w.Write(append(body, '\n'))
 	}
 }
 
