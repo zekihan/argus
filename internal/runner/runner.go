@@ -171,8 +171,16 @@ func (r *Runner) refreshEntry(ctx context.Context, e *entry) {
 	defer cancel()
 	now := time.Now()
 	collections, err := e.check.Collect(ctx, time.Now)
+	completedAt := time.Now()
+	if err == nil {
+		err = ctx.Err()
+		deadline, _ := ctx.Deadline()
+		if err == nil && !completedAt.Before(deadline) {
+			err = context.DeadlineExceeded
+		}
+	}
 	e.mu.Lock()
-	e.attemptedAt = time.Now()
+	e.attemptedAt = completedAt
 	if err != nil {
 		e.failure = Code(err)
 		e.mu.Unlock()

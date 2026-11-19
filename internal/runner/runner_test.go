@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/zekihan/argus/internal/kube"
@@ -17,9 +18,10 @@ import (
 )
 
 type fakeCheck struct {
-	mu          sync.Mutex
-	collections []result.Collection
-	err         error
+	mu              sync.Mutex
+	collections     []result.Collection
+	err             error
+	waitForDeadline bool
 }
 
 func (f *fakeCheck) Name() string { return "fake" }
@@ -29,9 +31,12 @@ func (f *fakeCheck) Describe() []result.Collection {
 		{Route: "things/system", Check: "things/system", Singleton: true},
 	}
 }
-func (f *fakeCheck) Collect(context.Context, func() time.Time) ([]result.Collection, error) {
+func (f *fakeCheck) Collect(ctx context.Context, _ func() time.Time) ([]result.Collection, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.waitForDeadline {
+		<-ctx.Done()
+	}
 	return f.collections, f.err
 }
 
@@ -99,6 +104,34 @@ func TestPendingThenPublishedThenStale(t *testing.T) {
 	if code, _ := r.Lookup("unknown", time.Now()); code != 404 {
 		t.Fatal(code)
 	}
+}
+
+func TestExpiredCollectionCannotPublish(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		check := &fakeCheck{collections: healthyCollections()}
+		r, _ := newRunner(check, nil)
+		r.Refresh(t.Context(), "fake")
+		_, previous := r.Lookup("things", time.Now())
+		observed := previous.(result.Envelope).ObservedAt
+
+		// A collector may finish evaluating a result after the deadline.
+		check.waitForDeadline = true
+		r.Refresh(t.Context(), "fake")
+		code, body := r.Lookup("things", time.Now())
+		envelope := body.(result.Envelope)
+		if code != 503 || envelope.Results["collection"] != kube.CodeTimeout {
+			t.Fatalf("expired collection reported %d with results %v", code, envelope.Results)
+		}
+		if envelope.ObservedAt == nil || !envelope.ObservedAt.Equal(*observed) {
+			t.Fatalf("expired collection replaced observation time %v with %v", observed, envelope.ObservedAt)
+		}
+
+		check.waitForDeadline = false
+		r.Refresh(t.Context(), "fake")
+		if code, body := r.Lookup("things", time.Now()); code != 200 || !body.(result.Envelope).ObservedAt.After(*observed) {
+			t.Fatalf("timely collection did not recover: %d %+v", code, body)
+		}
+	})
 }
 
 func TestExpectedItemMissingFromAPublishedSampleFailsClosed(t *testing.T) {
