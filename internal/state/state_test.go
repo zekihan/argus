@@ -3,6 +3,8 @@ package state
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +60,37 @@ func TestTimeoutAfterCommitRequiresReread(t *testing.T) {
 	reread, err := store.Load(t.Context())
 	if err != nil || !Equal(reread, ledger) {
 		t.Fatal("committed write not visible on read-back", reread, err)
+	}
+}
+
+func TestSaveRequiresConfigMapToConfirmLedger(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		version := "1"
+		switch r.Method {
+		case http.MethodGet:
+		case http.MethodPut:
+			version = "2"
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"metadata":{"resourceVersion":%q},"data":{"pgbackrest.json":%q}}`, version, empty)
+	}))
+	t.Cleanup(server.Close)
+	client, err := kube.New(server.URL, "", "", "test", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := New(&ConfigMap{Client: client, Namespace: "argus", Name: "argus-state"})
+	if _, err := store.Load(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ledger := Ledger{"db/db/repo1": {UID: "uid", RepositoryID: "destination", Created: time.Unix(0, 0).UTC()}}
+	if err := store.Save(t.Context(), ledger); kube.CodeOf(err) != kube.CodeInvalid {
+		t.Fatalf("save returned %v, want invalid response for an unconfirmed write", err)
+	}
+	if err := store.Save(t.Context(), ledger); !errors.Is(err, ErrNotLoaded) {
+		t.Fatalf("save after an unconfirmed write returned %v, want a required re-read", err)
 	}
 }
 
