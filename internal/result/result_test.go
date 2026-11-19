@@ -110,3 +110,14 @@ func TestInventoryAndSet(t *testing.T) {
 		t.Fatal("forgotten dimension passed", got)
 	}
 }
+
+func TestInventoryPreservesQualifiedTargets(t *testing.T) {
+	namespace := strings.Repeat("n", 63)
+	namePrefix := strings.Repeat(strings.Repeat("a", 63)+".", 3) + strings.Repeat("b", 60)
+	missing := namespace + "/" + namePrefix + "c"
+	unexpected := namespace + "/" + namePrefix + "d"
+	want := "missing(1): " + missing + "; unexpected(1): " + unexpected
+	if got := Inventory([]string{missing}, []string{unexpected}); got != want {
+		t.Fatalf("inventory = %q, want %q", got, want)
+	}
+}
