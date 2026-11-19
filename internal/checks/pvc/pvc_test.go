@@ -128,6 +128,29 @@ func TestExpectedPVCAndMultipleMounts(t *testing.T) {
 	}
 }
 
+func TestKubeletStatsPredatingClaimCreationDoNotCount(t *testing.T) {
+	s := sample(t)
+	s.Claims[0].Metadata.CreationTimestamp = now.Add(-time.Minute).Format(time.RFC3339)
+	s.Stats[0].Time = now.Add(-2 * time.Minute).Format(time.RFC3339)
+	h := checktest.New(New(cfg(), fakeAPI{sample: s}), now).Refresh(t)
+	for _, path := range []string{Route, Route + "/db/pgdata"} {
+		code, e := h.Get(t, path)
+		if code != 503 || e.Results["usage"] == "ok" || e.Healthy {
+			t.Fatalf("%s accepted a measurement from before claim creation: %d %+v", path, code, e)
+		}
+	}
+
+	// An old reading also cannot override a measurement from the current claim.
+	current := s.Stats[0]
+	current.Time = s.Claims[0].Metadata.CreationTimestamp
+	s.Stats[0].UsedBytes = ptr(95)
+	s.Stats = append(s.Stats, current)
+	h = checktest.New(New(cfg(), fakeAPI{sample: s}), now).Refresh(t)
+	if code, e := h.Get(t, Route+"/db/pgdata"); code != 200 || e.Results["usage"] != "ok" || e.Values["usedPercent"] != float64(80) {
+		t.Fatalf("current measurement was not used: %d %+v", code, e)
+	}
+}
+
 func TestCollectionErrorsAndExpiredSample(t *testing.T) {
 	for _, failure := range []string{kube.CodeForbidden, kube.CodeUnauthorized, kube.CodeTimeout, kube.CodeInvalid} {
 		h := checktest.New(New(cfg(), fakeAPI{err: &kube.Error{Code: failure}}), now).Refresh(t)

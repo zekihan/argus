@@ -14,8 +14,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 )
+
+type transportFunc func(*http.Request) (*http.Response, error)
+
+func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func tlsClient(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.Server) {
 	t.Helper()
@@ -386,6 +391,36 @@ func TestCanceledBodyReadIsNotRetried(t *testing.T) {
 	data, retry, err := client.request(ctx, http.MethodGet, "/apis/"+ClusterAPI+"/postgresclusters", url.Values{}, nil)
 	if err == nil || retry || data != nil {
 		t.Fatal("canceled response was accepted or marked retryable", data, retry, err)
+	}
+}
+
+func TestBodyReadTimeoutOnlyTripsAPIGateForCoreAPI(t *testing.T) {
+	for _, tc := range []struct {
+		path        string
+		wantFailure string
+	}{
+		{"/api/v1/nodes", CodeTimeout},
+		{"/apis/metrics.k8s.io/v1beta1/nodes", ""},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			client := &Client{BaseURL: "https://api.example", HTTP: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+				var body io.Reader = strings.NewReader(`{"kind":"APIVersions","versions":["v1"]}`)
+				if r.URL.Path == tc.path {
+					body = iotest.ErrReader(os.ErrDeadlineExceeded)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}, nil
+			})}}
+			if err := client.Probe(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			_, retry, err := client.request(t.Context(), http.MethodGet, tc.path, nil, nil)
+			if code := CodeOf(err); code != CodeTimeout || !retry {
+				t.Errorf("body read error = %s, retry = %v; want timeout and a retry", code, retry)
+			}
+			if h := client.Health(time.Time{}); h.FailureCode != tc.wantFailure {
+				t.Errorf("API gate failure = %q; want %q", h.FailureCode, tc.wantFailure)
+			}
+		})
 	}
 }
 
