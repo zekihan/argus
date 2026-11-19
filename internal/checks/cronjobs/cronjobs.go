@@ -32,7 +32,10 @@ type CronJob struct {
 
 type Job struct {
 	Metadata kube.Metadata `json:"metadata"`
-	Status   struct {
+	Spec     struct {
+		Suspend bool `json:"suspend"`
+	} `json:"spec"`
+	Status struct {
 		StartTime      string           `json:"startTime"`
 		CompletionTime string           `json:"completionTime"`
 		Conditions     []kube.Condition `json:"conditions"`
@@ -219,10 +222,16 @@ func evaluateRuns(jobs []Job, lastSuccessfulTime *string, item config.CronJob, n
 	counting, sawFinished := true, false
 	for _, job := range jobs {
 		done, failed := finished(job)
-		start, startErr := kube.ParseTime(job.Status.StartTime)
+		startTime := job.Status.StartTime
+		if !done && startTime == "" && !kube.ConditionTrue(job.Status.Conditions, "Suspended") {
+			// Count time waiting for the first start. A suspended Job can
+			// also lack a start time, which is reset when it resumes.
+			startTime = job.Metadata.CreationTimestamp
+		}
+		start, startErr := kube.ParseTime(startTime)
 		if !done {
 			active++
-			if startErr == nil && now.Sub(start).Seconds() > maxRun {
+			if !job.Spec.Suspend && startErr == nil && now.Sub(start).Seconds() > maxRun {
 				stuck++
 			}
 			continue
