@@ -14,10 +14,11 @@ No Secrets, pods or nodes/proxy anywhere.
 {{- $sa := include "argus.serviceAccount" . }}
 {{- $clusterRules := include "argus.clusterRules" . | fromJson }}
 {{- if $clusterRules }}
+{{- $clusterRoleName := include "argus.rbacName" (list . "") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "argus.clusterRoleName" . }}
+  name: {{ $clusterRoleName }}
   labels:
     {{- include "argus.labels" . | nindent 4 }}
 rules:
@@ -36,26 +37,27 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "argus.clusterRoleName" . }}
+  name: {{ $clusterRoleName }}
   labels:
     {{- include "argus.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "argus.clusterRoleName" . }}
+  name: {{ $clusterRoleName }}
 subjects:
   - kind: ServiceAccount
     name: {{ $sa }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
 {{- $namespaceRules := include "argus.namespaceRules" . | fromJson }}
+{{- $readerRoleName := include "argus.rbacName" (list . "-reader") }}
 {{- range $namespace := keys $namespaceRules | sortAlpha }}
 {{- $groups := get $namespaceRules $namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "argus.fullname" $ }}-reader
+  name: {{ $readerRoleName }}
   namespace: {{ $namespace }}
   labels:
     {{- include "argus.labels" $ | nindent 4 }}
@@ -69,14 +71,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "argus.fullname" $ }}-reader
+  name: {{ $readerRoleName }}
   namespace: {{ $namespace }}
   labels:
     {{- include "argus.labels" $ | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "argus.fullname" $ }}-reader
+  name: {{ $readerRoleName }}
 subjects:
   - kind: ServiceAccount
     name: {{ $sa }}
