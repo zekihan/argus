@@ -155,6 +155,35 @@ func TestHealthTracksTheLatestOutcome(t *testing.T) {
 	}
 }
 
+func TestInvalidDiscoveryResponseRecordsFailure(t *testing.T) {
+	const discovery = `{"kind":"APIVersions","versions":["v1"]}`
+	body := discovery
+	client := &Client{BaseURL: "https://api.example", HTTP: &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}}
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	good := client.Health(time.Time{})
+
+	body = `{"versions":` // A complete HTTP response with invalid JSON.
+	if err := client.Probe(t.Context()); CodeOf(err) != CodeInvalid {
+		t.Fatalf("discovery error = %v, want %s", err, CodeInvalid)
+	}
+	failed := client.Health(time.Time{})
+	if failed.FailureCode != CodeInvalid || !failed.LastFailure.After(good.LastSuccess) || !failed.LastSuccess.Equal(good.LastSuccess) {
+		t.Fatalf("invalid discovery reported as successful: %+v", failed)
+	}
+
+	body = discovery
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := client.Health(time.Time{}); !recovered.LastSuccess.After(recovered.LastFailure) {
+		t.Fatalf("discovery recovery not reflected: %+v", recovered)
+	}
+}
+
 // A success from before a revocation must not hide later refusals: a check
 // stops at its first refused read, so its other paths are never re-read.
 func TestRevokedPermissionsOutliveEarlierSuccesses(t *testing.T) {
@@ -388,7 +417,7 @@ func TestCanceledBodyReadIsNotRetried(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go func() { <-flushed; cancel() }()
-	data, retry, err := client.request(ctx, http.MethodGet, "/apis/"+ClusterAPI+"/postgresclusters", url.Values{}, nil)
+	data, retry, err := client.request(ctx, http.MethodGet, "/apis/"+ClusterAPI+"/postgresclusters", url.Values{}, nil, nil)
 	if err == nil || retry || data != nil {
 		t.Fatal("canceled response was accepted or marked retryable", data, retry, err)
 	}
@@ -413,7 +442,7 @@ func TestBodyReadTimeoutOnlyTripsAPIGateForCoreAPI(t *testing.T) {
 			if err := client.Probe(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			_, retry, err := client.request(t.Context(), http.MethodGet, tc.path, nil, nil)
+			_, retry, err := client.request(t.Context(), http.MethodGet, tc.path, nil, nil, nil)
 			if code := CodeOf(err); code != CodeTimeout || !retry {
 				t.Errorf("body read error = %s, retry = %v; want timeout and a retry", code, retry)
 			}
