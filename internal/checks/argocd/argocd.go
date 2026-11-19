@@ -124,6 +124,8 @@ func (c *Check) Evaluate(apps []Application, now time.Time) result.Collection {
 
 func (c *Check) application(app Application, now time.Time) result.Item {
 	name := app.Metadata.Name
+	// A replacement Application can reuse the same name between samples.
+	observationKey := name + "/" + app.Metadata.UID
 	automated := app.automated()
 	values := map[string]any{"automated": automated, "syncStatus": result.SafeName(app.Status.Sync.Status),
 		"healthStatus": result.SafeName(app.Status.Health.Status), "observedSinceSeconds": c.seen.Observed(now).Seconds()}
@@ -145,7 +147,7 @@ func (c *Check) application(app Application, now time.Time) result.Item {
 	// missing sync status means Argo CD could not compare, which is never
 	// known to be healthy.
 	drifted := app.Status.Sync.Status == "OutOfSync"
-	since := c.seen.Active(name+"/sync", drifted, now)
+	since := c.seen.Active(observationKey+"/sync", drifted, now)
 	switch app.Status.Sync.Status {
 	case "Synced":
 		results["sync"] = result.OK
@@ -162,14 +164,14 @@ func (c *Check) application(app Application, now time.Time) result.Item {
 	switch status := app.Status.Health.Status; status {
 	case "Healthy", "Suspended":
 		results["health"] = result.OK
-		c.seen.Active(name+"/progressing", false, now)
+		c.seen.Active(observationKey+"/progressing", false, now)
 	case "Degraded":
 		results["health"] = result.Reason("degraded")
 	case "Missing":
 		results["health"] = result.Reason("missing")
 	case "Progressing":
 		// From the health lastTransitionTime when Argo CD records one.
-		since := c.seen.Active(name+"/progressing", true, now)
+		since := c.seen.Active(observationKey+"/progressing", true, now)
 		if t, err := kube.ParseTime(app.Status.Health.LastTransitionTime); err == nil {
 			since = now.Sub(t)
 		}
