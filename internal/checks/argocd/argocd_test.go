@@ -91,6 +91,25 @@ func TestUnknownSyncFailsWithoutAWindow(t *testing.T) {
 	}
 }
 
+func TestRecreatedApplicationStartsNewObservationWindows(t *testing.T) {
+	check := New(cfg(), nil)
+	apps := []Application{app(t, "auto", true, "OutOfSync", "Progressing", "", "Succeeded")}
+	apps[0].Metadata.UID = "original"
+	results(t, check, apps, now, "auto")
+	if r := results(t, check, apps, now.Add(16*time.Minute), "auto"); r["sync"] != "out_of_sync(for 16m, max 15m)" || r["health"] != "progressing(for 16m, max 15m)" {
+		t.Fatal("original application did not age past both windows", r)
+	}
+
+	apps[0].Metadata.UID = "replacement"
+	replacedAt := now.Add(17 * time.Minute)
+	if r := results(t, check, apps, replacedAt, "auto"); r["sync"] != "ok" || r["health"] != "ok" {
+		t.Fatal("replacement application inherited the original windows", r)
+	}
+	if r := results(t, check, apps, replacedAt.Add(16*time.Minute), "auto"); r["sync"] != "out_of_sync(for 16m, max 15m)" || r["health"] != "progressing(for 16m, max 15m)" {
+		t.Fatal("replacement application did not age past both windows", r)
+	}
+}
+
 func TestHealthAndOperation(t *testing.T) {
 	check := New(cfg(), nil)
 	for _, tc := range []struct {

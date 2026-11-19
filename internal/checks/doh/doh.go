@@ -24,6 +24,8 @@ type Check struct {
 func New(c config.DoH) *Check {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	// An existing connection can bypass DNS and keep reaching an old address.
+	transport.DisableKeepAlives = true
 	if c.DNSResolver != "" {
 		resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, c.DNSResolver)
