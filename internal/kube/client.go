@@ -85,7 +85,7 @@ type Client struct {
 
 // Health is the outcome of recent API requests.
 type Health struct {
-	// LastSuccess is the last 2xx response, including the /api probe.
+	// LastSuccess is the last successful request, including the /api probe.
 	LastSuccess time.Time
 	// LastFailure and FailureCode describe the last failure that shows the
 	// API server itself is unusable: transport or TLS errors, a missing token,
@@ -236,7 +236,7 @@ func List[T any](ctx context.Context, c *Client, path, selector string) ([]T, er
 	resourceVersion := ""
 	total := 0
 	for range 100 {
-		data, err := c.page(ctx, path, query)
+		data, err := c.page(ctx, path, query, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -276,19 +276,13 @@ func List[T any](ctx context.Context, c *Client, path, selector string) ([]T, er
 
 // Get decodes one object.
 func (c *Client) Get(ctx context.Context, path string, out any) error {
-	data, err := c.page(ctx, path, nil)
-	if err != nil {
-		return err
-	}
-	if json.Unmarshal(data, out) != nil {
-		return &Error{Code: CodeInvalid, Path: path}
-	}
-	return nil
+	_, err := c.page(ctx, path, nil, func(data []byte) error { return json.Unmarshal(data, out) })
+	return err
 }
 
-func (c *Client) page(ctx context.Context, path string, query url.Values) ([]byte, error) {
+func (c *Client) page(ctx context.Context, path string, query url.Values, decode func([]byte) error) ([]byte, error) {
 	for attempt := range 3 {
-		data, retry, err := c.request(ctx, http.MethodGet, path, query, nil)
+		data, retry, err := c.request(ctx, http.MethodGet, path, query, nil, decode)
 		if err == nil || !retry || attempt == 2 {
 			return data, err
 		}
@@ -304,7 +298,7 @@ func (c *Client) page(ctx context.Context, path string, query url.Values) ([]byt
 	return nil, &Error{Code: CodeUnreachable, Path: path}
 }
 
-func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte) (data []byte, retry bool, err error) {
+func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte, decode func([]byte) error) (data []byte, retry bool, err error) {
 	defer func() { c.record(path, err) }()
 	target := c.BaseURL + path
 	if len(query) > 0 {
@@ -364,6 +358,9 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	if err != nil {
 		return nil, ctx.Err() == nil, transportError(path, err)
 	}
+	if decode != nil && decode(data) != nil {
+		return nil, false, &Error{Code: CodeInvalid, Path: path}
+	}
 	return data, false, nil
 }
 
@@ -404,7 +401,7 @@ func decodeConfigMap(path string, data []byte) (ConfigMap, error) {
 // GetConfigMap reads one ConfigMap with its resourceVersion.
 func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (ConfigMap, error) {
 	path := configMapPath(namespace, name)
-	data, err := c.page(ctx, path, nil)
+	data, err := c.page(ctx, path, nil, nil)
 	if err != nil {
 		return ConfigMap{}, err
 	}
@@ -432,7 +429,7 @@ func (c *Client) UpdateConfigMap(ctx context.Context, namespace, name string, cu
 	if err != nil {
 		return ConfigMap{}, &Error{Code: CodeClient, Path: path}
 	}
-	response, _, err := c.request(ctx, http.MethodPut, path, nil, body)
+	response, _, err := c.request(ctx, http.MethodPut, path, nil, body, nil)
 	if err != nil {
 		return ConfigMap{}, err
 	}
