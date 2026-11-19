@@ -394,6 +394,50 @@ func TestConflictAdoptsStoredLedgerAndRewrites(t *testing.T) {
 	}
 }
 
+func TestCheckpointConflictPreservesDestinationChange(t *testing.T) {
+	const key = "db/db/repo1"
+	backend, store := memoryStore(emptyLedger)
+	api := &fakeAPI{sample: Sample{Clusters: []kube.Cluster{withStanzas(testCluster(t))}}}
+	check := New(testConfig(), api, store, false, discard)
+	refresh := func(now time.Time) result.Envelope {
+		t.Helper()
+		collections, err := check.Collect(t.Context(), func() time.Time { return now })
+		if err != nil {
+			t.Fatal(err)
+		}
+		collection := collections[0]
+		item, ok := collection.Find(key)
+		if !ok {
+			t.Fatalf("missing repository %s", key)
+		}
+		return collection.ItemEnvelope(item, result.OK, now, now)
+	}
+	if report := refresh(testNow); !report.Healthy {
+		t.Fatalf("initial backup was rejected: %+v", report)
+	}
+	// The destination changes while PGO still reports the old backup. At the
+	// first write for the new destination, Argo restores the earlier ledger.
+	api.sample.Clusters[0].Spec.Backups.PGBackRest.Global = map[string]string{"repo1-path": "/changed"}
+	backend.BeforeWrite = func(attempt int) error {
+		if attempt == 1 {
+			backend.Set(emptyLedger)
+		}
+		return nil
+	}
+	changedAt := testNow.Add(time.Minute)
+	if report := refresh(changedAt); report.Healthy || report.Results["freshness"] != "no_success" || report.Results["state"] != result.OK {
+		t.Fatalf("old backup was accepted after the checkpoint conflict: %+v", report)
+	}
+	stored, err := state.Decode([]byte(backend.Data()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := stored[key]
+	if !entry.LastSuccess.IsZero() || !entry.NotBefore.Equal(changedAt) {
+		t.Fatalf("checkpoint lost the destination change: %+v", entry)
+	}
+}
+
 func TestTimeoutAfterCommitConvergesWithoutRewrite(t *testing.T) {
 	backend, store := memoryStore(emptyLedger)
 	backend.AfterWrite = func(attempt int) error {
