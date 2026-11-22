@@ -25,8 +25,10 @@ and never echoes raw condition messages, API bodies or spec fields.
 
 ## API
 
-Every route except `/healthz` requires `Authorization: Bearer <token>`. Responses are 200 when every
-result is healthy (`ok` or `n/a`) and 503 otherwise.
+Every route except `/healthz` requires `Authorization: Bearer <token>`. Check routes respond 200
+when every result is healthy (`ok` or `n/a`) and 503 otherwise; `/healthz` always responds 200, and
+`/v1/checks` responds from its process results (`apiserver`, `sample_fresh`) alone, so an unhealthy
+collection listed there does not by itself make it 503.
 
 | Route | Body |
 | --- | --- |
