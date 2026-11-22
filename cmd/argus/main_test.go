@@ -4,10 +4,17 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -149,4 +156,282 @@ func TestPKILifecycleSnapshot(t *testing.T) {
 	if err := run([]string{"once", "-check", "pki-lifecycle", "-snapshot", filepath.Join(dir, "missing.json")}, &bytes.Buffer{}, logger); err == nil || err.Error() != "open snapshot: file does not exist" {
 		t.Fatalf("missing snapshot = %v, want a file-does-not-exist error", err)
 	}
+	huge := filepath.Join(dir, "huge.json")
+	f, err := os.Create(huge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(64*1024*1024 + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"once", "-check", "pki-lifecycle", "-snapshot", huge}, &bytes.Buffer{}, logger); err == nil || err.Error() != "snapshot exceeds read budget or cannot be read" {
+		t.Fatalf("oversized snapshot = %v", err)
+	}
+}
+
+func TestAPIClient(t *testing.T) {
+	without := flag.NewFlagSet("once", flag.ContinueOnError)
+	api := addAPIFlags(without)
+	if err := without.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.client(time.Second); err == nil || err.Error() != "set -api-url or the in-cluster Kubernetes service environment" {
+		t.Fatalf("missing origin = %v", err)
+	}
+	inCluster := flag.NewFlagSet("once", flag.ContinueOnError)
+	clusterAPI := addAPIFlags(inCluster)
+	if err := inCluster.Parse([]string{"-ca-file", filepath.Join(t.TempDir(), "missing.crt")}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	_, err := clusterAPI.client(time.Second)
+	if err == nil || strings.Contains(err.Error(), "10.0.0.1") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("in-cluster client = %v, want a CA failure that does not echo the API address", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	withURL := flag.NewFlagSet("once", flag.ContinueOnError)
+	loopback := addAPIFlags(withURL)
+	if err := withURL.Parse([]string{"-api-url", server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	client, err := loopback.client(time.Second)
+	if err != nil || client.BaseURL != server.URL {
+		t.Fatal(client, err)
+	}
+	bad := flag.NewFlagSet("once", flag.ContinueOnError)
+	plain := addAPIFlags(bad)
+	if err := bad.Parse([]string{"-api-url", "http://example.com:80"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plain.client(time.Second); err == nil {
+		t.Fatal("a non-loopback HTTP origin was accepted")
+	}
+}
+
+func TestOnceFailsClosedForEveryCheck(t *testing.T) {
+	const secret = "secret-api-body"
+	forbidden := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, secret)
+	}))
+	defer forbidden.Close()
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/configmaps/") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, secret)
+			return
+		}
+		if r.URL.Path == "/version" {
+			_, _ = io.WriteString(w, `{"gitVersion":"v1.31.0"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"1"},"items":[]}`)
+	}))
+	defer empty.Close()
+
+	dir := t.TempDir()
+	logger := slog.New(slog.DiscardHandler)
+	sha := strings.Repeat("ab", 32)
+	configs := map[string]string{
+		"doh":             `{"checks":{"doh":{"url":"https://127.0.0.1:1/dns-query","name":"example.com","expectedIPv4":"192.0.2.1"}}}`,
+		"pvcs":            `{"checks":{"pvcs":{"storageClasses":["longhorn"],"expectedNodes":["worker"],"expected":[{"namespace":"db","name":"data"}]}}}`,
+		"hosts":           `{"checks":{"hosts":{"privateKeyFile":"/no/such/key","knownHostsFile":"/no/such/known","hosts":[{"name":"bastion","address":"127.0.0.1"}]}}}`,
+		"nodes":           `{"checks":{"nodes":{"expected":["worker"]}}}`,
+		"postgres":        `{"checks":{"postgres":{"clusters":[{"namespace":"db","name":"db"}]}}}`,
+		"pgbackrest":      `{"checks":{"pgbackrest":{"clusters":[{"namespace":"db","name":"db","repos":{"repo1":{}}}]}}}`,
+		"longhorn":        `{"checks":{"longhorn":{"namespace":"longhorn","expectedPVCs":["db/data"],"maxBackupAgeSeconds":86400,"systemBackupMaxAgeSeconds":86400}}}`,
+		"cronjobs":        `{"checks":{"cronjobs":{"items":[{"namespace":"app","name":"job","maxAgeSeconds":3600}]}}}`,
+		"certificates":    `{"checks":{"certificates":{"expected":[{"namespace":"web","name":"site"}]}}}`,
+		"pki":             `{"checks":{"pki":{"rootSHA256":"` + sha + `","expectedCertificates":[{"namespace":"cert-manager","name":"selfsigned-ca"}]}}}`,
+		"externalsecrets": `{"checks":{"externalsecrets":{"expectedExternalSecrets":[{"namespace":"apps","name":"example"}]}}}`,
+		"argocd":          `{"checks":{"argocd":{"namespace":"argocd","expected":["root"]}}}`,
+	}
+	for name, body := range configs {
+		t.Run(name, func(t *testing.T) {
+			file := filepath.Join(dir, name+".json")
+			if err := os.WriteFile(file, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"once", "-config", file, "-check", name}
+			if name != "doh" && name != "hosts" {
+				args = append(args, "-api-url", forbidden.URL)
+			}
+			var stdout bytes.Buffer
+			err := run(args, &stdout, logger)
+			if !errors.Is(err, errUnhealthy) || strings.Contains(stdout.String(), secret) || strings.Contains(stdout.String(), "no such file") {
+				t.Fatalf("error = %v, stdout = %s", err, stdout.String())
+			}
+			if name != "doh" && name != "hosts" && !strings.Contains(stdout.String(), `"collection": "forbidden"`) {
+				t.Fatalf("stdout = %s, want a forbidden collection", stdout.String())
+			}
+		})
+	}
+
+	missingFile := filepath.Join(dir, "nodes.json")
+	var stdout bytes.Buffer
+	if err := run([]string{"once", "-config", missingFile, "-check", "nodes", "-api-url", empty.URL}, &stdout, logger); !errors.Is(err, errUnhealthy) || !strings.Contains(stdout.String(), "missing(1): worker") || strings.Contains(stdout.String(), secret) {
+		t.Fatalf("missing node = %v, stdout = %s", err, stdout.String())
+	}
+	stdout.Reset()
+	healthyFile := filepath.Join(dir, "externalsecrets.json")
+	if err := os.WriteFile(healthyFile, []byte(`{"checks":{"externalsecrets":{}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"once", "-config", healthyFile, "-check", "externalsecrets", "-api-url", empty.URL}, &stdout, logger); err != nil || !strings.Contains(stdout.String(), `"healthy": true`) || !strings.Contains(stdout.String(), `"collections"`) {
+		t.Fatalf("healthy once = %v, stdout = %s", err, stdout.String())
+	}
+}
+
+func TestPKILifecycleFromAPI(t *testing.T) {
+	const secret = "secret-api-body"
+	notAfter := time.Now().Add(200 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	renewal := time.Now().Add(100 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	list := `{"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"namespace":"cert-manager","name":"selfsigned-ca"},"spec":{"isCA":true,"issuerRef":{"name":"selfsigned-ca-issuer"},"privateKey":{"rotationPolicy":"Never"}},"status":{"notAfter":"` + notAfter + `","renewalTime":"` + renewal + `","conditions":[{"type":"Ready","status":"True"}]}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apis/cert-manager.io/v1/certificates" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, secret)
+			return
+		}
+		_, _ = io.WriteString(w, list)
+	}))
+	defer server.Close()
+	logger := slog.New(slog.DiscardHandler)
+	var stdout bytes.Buffer
+	if err := run([]string{"once", "-check", "pki-lifecycle", "-api-url", server.URL}, &stdout, logger); err != nil || !strings.Contains(stdout.String(), `"healthy": true`) || strings.Contains(stdout.String(), secret) {
+		t.Fatalf("api lifecycle = %v, stdout = %s", err, stdout.String())
+	}
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, secret)
+	}))
+	defer denied.Close()
+	err := run([]string{"once", "-check", "pki-lifecycle", "-api-url", denied.URL}, &bytes.Buffer{}, logger)
+	if err == nil || errors.Is(err, errUnhealthy) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("forbidden lifecycle = %v", err)
+	}
+}
+
+func TestServeDecisionPaths(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.DiscardHandler)
+	nodes := filepath.Join(dir, "nodes.json")
+	if err := os.WriteFile(nodes, []byte(`{"checks":{"nodes":{"expected":["worker"]}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"serve", "-config", nodes}, &bytes.Buffer{}, logger); err == nil || err.Error() != "set -api-url or the in-cluster Kubernetes service environment" {
+		t.Fatalf("serve without an API = %v", err)
+	}
+	doh := filepath.Join(dir, "doh.json")
+	if err := os.WriteFile(doh, []byte(`{"listenAddress":"127.0.0.1:1","tls":{"certFile":"/no/such/cert","keyFile":"/no/such/key"},"checks":{"doh":{"url":"https://127.0.0.1:1/dns-query","name":"example.com","expectedIPv4":"192.0.2.1"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"serve", "-config", doh}, &bytes.Buffer{}, logger); err == nil {
+		t.Fatal("missing TLS material was accepted")
+	}
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	busy := filepath.Join(dir, "busy.json")
+	if err := os.WriteFile(busy, []byte(fmt.Sprintf(`{"listenAddress":%q,"checks":{"doh":{"url":"https://127.0.0.1:1/dns-query","name":"example.com","expectedIPv4":"192.0.2.1"}}}`, held.Addr().String())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"serve", "-config", busy}, &bytes.Buffer{}, logger); err == nil || err.Error() != "cannot listen on "+held.Addr().String() {
+		t.Fatalf("busy address = %v", err)
+	}
+
+	const secret = "secret-api-body"
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, secret)
+	}))
+	defer api.Close()
+	port := freePort(t)
+	token := strings.Repeat("a", 32)
+	tokenFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	serveFile := filepath.Join(dir, "serve.json")
+	if err := os.WriteFile(serveFile, []byte(fmt.Sprintf(`{"listenAddress":"127.0.0.1:%d","tokenFile":%q,"checks":{"nodes":{"expected":["worker"]}}}`, port, tokenFile)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- run([]string{"serve", "-config", serveFile, "-api-url", api.URL}, &bytes.Buffer{}, logger)
+	}()
+	base := "http://127.0.0.1:" + strconv.Itoa(port)
+	health := waitGET(t, base+"/healthz", "")
+	if !strings.Contains(health, `"healthy":true`) {
+		t.Fatal(health)
+	}
+	body := waitGET(t, base+"/v1/nodes", token)
+	if !strings.Contains(body, `"collection":"forbidden"`) || strings.Contains(body, secret) {
+		t.Fatalf("nodes = %s", body)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not stop after SIGTERM")
+	}
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func waitGET(t *testing.T, url, token string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			last = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusServiceUnavailable && token != "" && !strings.Contains(string(data), "forbidden") {
+			last = errors.New(string(data))
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		return string(data)
+	}
+	t.Fatal(last)
+	return ""
 }

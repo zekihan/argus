@@ -46,9 +46,12 @@ func longhornNode(t *testing.T, name string, available int64) LonghornNode {
 
 func jsonInt(n int64) string { b, _ := json.Marshal(n); return string(b) }
 
-type fakeAPI struct{ sample Sample }
+type fakeAPI struct {
+	sample Sample
+	err    error
+}
 
-func (f *fakeAPI) Collect(context.Context) (Sample, error) { return f.sample, nil }
+func (f *fakeAPI) Collect(context.Context) (Sample, error) { return f.sample, f.err }
 
 func cfg() config.Nodes {
 	c := config.Nodes{Expected: []string{"agent", "control"}, LonghornNamespace: "longhorn"}

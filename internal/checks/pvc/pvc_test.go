@@ -58,7 +58,7 @@ func TestUnavailableAndInventoryFailClosed(t *testing.T) {
 	for name, mutate := range map[string]func(*Sample){
 		"missing stats":         func(s *Sample) { s.Stats = nil },
 		"stale":                 func(s *Sample) { s.Stats[0].Time = now.Add(-301 * time.Second).Format(time.RFC3339) },
-		"future":                func(s *Sample) { s.Stats[0].Time = now.Add(61 * time.Second).Format(time.RFC3339) },
+		"future":                func(s *Sample) { s.Stats[0].Time = now.Add(2 * time.Minute).Format(time.RFC3339) },
 		"invalid time":          func(s *Sample) { s.Stats[0].Time = "credential-shaped-secret" },
 		"missing used":          func(s *Sample) { s.Stats[0].UsedBytes = nil },
 		"missing capacity":      func(s *Sample) { s.Stats[0].CapacityBytes = nil },

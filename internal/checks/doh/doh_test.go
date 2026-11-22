@@ -1,15 +1,19 @@
 package doh
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/zekihan/argus/internal/checks/checktest"
 	"github.com/zekihan/argus/internal/config"
 	"github.com/zekihan/argus/internal/result"
 )
@@ -86,6 +90,65 @@ func TestWireResponses(t *testing.T) {
 			got, err := c.Collect(context.Background(), time.Now)
 			if err != nil || (got[0].Results["answer"] == result.OK) != tc.want {
 				t.Fatalf("got %v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestRejectedAnswersAndStaleSamplesFailClosed(t *testing.T) {
+	const secret = "<html>secret-login</html>"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(secret))
+	}))
+	defer server.Close()
+	c := New(config.DoH{URL: server.URL + "/dns-query", Name: "one.one.one.one", ExpectedIPv4: "1.1.1.1"})
+	c.client.Transport.(*http.Transport).TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig
+	if c.Name() != "doh" || c.Describe()[0].Route != "doh" || c.Describe()[0].Singleton != true {
+		t.Fatal(c.Describe())
+	}
+	got, err := c.Collect(context.Background(), time.Now)
+	if err != nil || got[0].Results["answer"] != "invalid_response" {
+		t.Fatal(got, err)
+	}
+	data, _ := json.Marshal(got)
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), "secret-login") {
+		t.Fatal(string(data))
+	}
+	h := checktest.New(c, time.Time{})
+	// The harness wraps Collect, so point that client at the test server too.
+	h.Refresh(t)
+	code, body := h.Runner.Lookup("doh", time.Now().Add(400*24*time.Hour))
+	envelope, ok := body.(result.Envelope)
+	if !ok || code != 503 || !strings.HasPrefix(envelope.Results["collection"], "stale(") {
+		t.Fatalf("stale sample = %d %+v", code, body)
+	}
+	h.NoLeak(t, "secret-login")
+}
+
+func TestReadNameRejectsMalformedCompression(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		b    []byte
+	}{
+		{"truncated", []byte{1}},
+		{"truncated pointer", []byte{0xc0}},
+		{"forward pointer", []byte{0xc0, 0x02, 0}},
+		{"reserved bits", []byte{0x40, 0}},
+		{"label overrun", []byte{3, 'a'}},
+		{"name too long", append(bytes.Repeat([]byte{63}, 1), bytes.Repeat([]byte{'a'}, 63)...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			message := tc.b
+			if tc.name == "name too long" {
+				message = nil
+				for range 5 {
+					message = append(message, 63)
+					message = append(message, bytes.Repeat([]byte{'a'}, 63)...)
+				}
+			}
+			if _, _, ok := readName(message, 0); ok {
+				t.Fatal("malformed name accepted")
 			}
 		})
 	}

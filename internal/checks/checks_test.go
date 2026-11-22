@@ -1,11 +1,13 @@
 package checks
 
 import (
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/zekihan/argus/internal/config"
+	"github.com/zekihan/argus/internal/runner"
 )
 
 func parse(t *testing.T, json string) config.Config {
@@ -68,5 +70,54 @@ func TestKubernetes(t *testing.T) {
 				t.Fatalf("Kubernetes() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+const everyCheckJSON = `{
+  "checks": {
+    "doh": {"url":"https://dns.example.com/dns-query","name":"example.com","expectedIPv4":"192.0.2.1"},
+    "pvcs": {"storageClasses":["longhorn"],"expectedNodes":["worker"],"expected":[{"namespace":"db","name":"data"}],"allowUnmounted":[{"namespace":"db","name":"spare"}]},
+    "hosts": {"privateKeyFile":"/tmp/key","knownHostsFile":"/tmp/known","hosts":[{"name":"bastion","address":"192.0.2.10"}]},
+    "nodes": {"expected":["worker"],"longhornNamespace":"longhorn"},
+    "postgres": {"clusters":[{"namespace":"db","name":"db"}]},
+    "pgbackrest": {"clusters":[{"namespace":"db","name":"db","repos":{"repo1":{}}},{"namespace":"app","name":"app","repos":{"repo2":{}}}]},
+    "longhorn": {"namespace":"longhorn","expectedPVCs":["db/data"],"maxBackupAgeSeconds":86400,"systemBackupMaxAgeSeconds":86400},
+    "cronjobs": {"items":[{"namespace":"mail","name":"dmarc","maxAgeSeconds":3600},{"namespace":"mail","name":"sync","maxAgeSeconds":3600},{"namespace":"app","name":"job","maxAgeSeconds":3600}]},
+    "certificates": {"expected":[{"namespace":"web","name":"site"}]},
+    "pki": {"rootSHA256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expectedCertificates":[{"namespace":"cert-manager","name":"selfsigned-ca"}],"expectedBundles":["bridge-ca"]},
+    "externalsecrets": {"expectedExternalSecrets":[{"namespace":"apps","name":"example"}],"expectedSecretStores":[{"namespace":"apps","name":"vault"}]},
+    "argocd": {"namespace":"argocd","expected":["root"]}
+  }
+}`
+
+func TestBuildWiresEveryEnabledCheck(t *testing.T) {
+	cfg := parse(t, everyCheckJSON)
+	if !Kubernetes(cfg) {
+		t.Fatal("kubernetes checks were not detected")
+	}
+	built, err := Build(cfg, Deps{Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := cfg.Enabled()
+	if len(built) != len(enabled) {
+		t.Fatalf("built %d checks, configuration enables %d", len(built), len(enabled))
+	}
+	for i, want := range enabled {
+		if built[i].Check.Name() != want.Name || len(built[i].Check.Describe()) == 0 {
+			t.Fatalf("check %d = %q, want %q with a description", i, built[i].Check.Name(), want.Name)
+		}
+	}
+}
+
+func TestBuildReportsConstructorFailure(t *testing.T) {
+	original := registry["doh"]
+	t.Cleanup(func() { registry["doh"] = original })
+	registry["doh"] = func(config.Config, Deps) (runner.Check, error) {
+		return nil, errors.New("constructor failed")
+	}
+	_, err := Build(parse(t, dohJSON), Deps{Logger: slog.New(slog.DiscardHandler)})
+	if err == nil || err.Error() != "check doh: constructor failed" {
+		t.Fatalf("error = %v, want the constructor failure", err)
 	}
 }
