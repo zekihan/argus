@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -316,6 +319,70 @@ func TestExpectedDimensionsTurnMissingToolsUnavailable(t *testing.T) {
 	item = Evaluate(config.Host{Name: "pve"}, Outcome{SSH: "ok", Exit: 1, Output: probeJSON(t, long)})
 	if len(item.Results["failed_units"]) > maxFieldLength {
 		t.Fatal("probe field not capped")
+	}
+}
+
+func TestProbeFailuresStayOnFixedCodes(t *testing.T) {
+	f := newFixture(t)
+	if err := os.Remove(f.keyFile); err != nil {
+		t.Fatal(err)
+	}
+	if item := probe(t, f, "127.0.0.1:1"); item.Results["ssh"] != "key_unavailable" || strings.Contains(item.Results["ssh"], "no such") {
+		t.Fatal(item.Results)
+	}
+	f = newFixture(t)
+	if err := os.WriteFile(f.keyFile, []byte(strings.Repeat("a", 64*1024+1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if item := probe(t, f, "127.0.0.1:1"); item.Results["ssh"] != "key_unavailable" {
+		t.Fatal(item.Results)
+	}
+	f = newFixture(t)
+	host := config.Host{Name: "bad", Address: "not a host"}
+	if item := Evaluate(host, f.prober().Probe(t.Context(), host)); item.Results["ssh"] != "unreachable" {
+		t.Fatal(item.Results)
+	}
+	if item := Evaluate(host, (SSH{User: "argus", PrivateKeyFile: f.keyFile, KnownHostsFile: f.dir}).Probe(t.Context(), host)); item.Results["ssh"] != "known_hosts_unavailable" {
+		t.Fatal(item.Results)
+	}
+	if item := Evaluate(config.Host{Name: "pve"}, Outcome{SSH: result.OK, Exit: -1}); item.Results["script"] != "killed" || item.Results["disk"] != "unknown" {
+		t.Fatal(item.Results)
+	}
+	if item := Evaluate(config.Host{Name: "pve"}, Outcome{SSH: result.OK, Exit: 0, Output: []byte(`{"disk":"ok "}`)}); item.Results["disk"] != "unknown" {
+		t.Fatal(item.Results)
+	}
+	if item := Evaluate(config.Host{Name: "pve"}, Outcome{SSH: result.OK, Exit: 0, Output: []byte("{\"disk\":\"\u0000\"}")}); item.Results["disk"] != "unknown" {
+		t.Fatal(item.Results)
+	}
+}
+
+func TestHostKeyAlgorithmsAndRevocation(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := ssh.NewPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	algorithms := hostKeyAlgorithms(func(string, net.Addr, ssh.PublicKey) error {
+		return &knownhosts.KeyError{Want: []knownhosts.KnownKey{{Key: pub}}}
+	}, "127.0.0.1:22")
+	if !slices.Equal(algorithms, []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}) {
+		t.Fatal(algorithms)
+	}
+	if hostKeyAlgorithms(func(string, net.Addr, ssh.PublicKey) error { return errors.New("no") }, "127.0.0.1:22") != nil {
+		t.Fatal("a callback error other than a key mismatch returned algorithms")
+	}
+
+	f := newFixture(t)
+	s := startServer(t, f.host, f.client.PublicKey(), behaviour{stdout: probeJSON(t, allOK())})
+	line := "@revoked " + knownhosts.Line([]string{knownhosts.Normalize(s.address)}, f.host.PublicKey()) + "\n"
+	if err := os.WriteFile(f.knownFile, []byte(line), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if item := probe(t, f, s.address); item.Results["ssh"] != "host_key_revoked" {
+		t.Fatal(item.Results)
 	}
 }
 

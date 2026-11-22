@@ -32,9 +32,12 @@ func decode(t *testing.T, value string) Cluster {
 	return out
 }
 
-type fakeAPI struct{ clusters []Cluster }
+type fakeAPI struct {
+	clusters []Cluster
+	err      error
+}
 
-func (f *fakeAPI) Collect(context.Context) ([]Cluster, error) { return f.clusters, nil }
+func (f *fakeAPI) Collect(context.Context) ([]Cluster, error) { return f.clusters, f.err }
 
 var cfg = config.Postgres{Clusters: []config.NamespacedName{{Namespace: "db", Name: "db"}}}
 

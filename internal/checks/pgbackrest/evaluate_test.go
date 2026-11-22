@@ -48,6 +48,33 @@ func evaluate(t *testing.T, sample Sample, old state.Ledger, now time.Time) (map
 	return results, ledger
 }
 
+func TestMalformedEvidenceFailsClosed(t *testing.T) {
+	cluster := testCluster(t)
+	cluster.Metadata.UID = ""
+	if _, _, err := Evaluate(testConfig(), Sample{Clusters: []kube.Cluster{cluster}}, nil, testNow); err == nil || err.Error() != "invalid PostgresCluster identity" {
+		t.Fatal(err)
+	}
+	cluster = testCluster(t)
+	cluster.Spec.Backups.PGBackRest.Repos = cluster.Spec.Backups.PGBackRest.Repos[:1]
+	previous := state.Ledger{
+		"db/db/repo2": {UID: cluster.Metadata.UID, Created: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), RepositoryID: "other", NotBefore: testNow.Add(time.Hour)},
+		"not-a-key":   {UID: "leftover", Created: testNow, RepositoryID: "missing"},
+	}
+	_, next := evaluate(t, Sample{Clusters: []kube.Cluster{cluster}}, previous, testNow)
+	if _, ok := next["not-a-key"]; ok || !next["db/db/repo2"].NotBefore.Equal(testNow.Add(time.Hour)) {
+		t.Fatal(next["db/db/repo2"], next)
+	}
+	job := testJob(t)
+	job.Metadata.CreationTimestamp = "not-a-time"
+	job.Metadata.Owners = []kube.Owner{{Controller: false, Kind: "CronJob"}}
+	cron := testCron(t)
+	cron.Metadata.CreationTimestamp = "not-a-time"
+	results, _ := evaluate(t, Sample{Clusters: []kube.Cluster{testCluster(t)}, Jobs: []kube.Job{job}, CronJobs: []kube.CronJob{cron}}, nil, testNow)
+	if results["db/db/repo1"].Source == "Completed Job" || results["db/db/repo2"].Source == "CronJob lastSuccessfulTime" {
+		t.Fatal(results)
+	}
+}
+
 func TestSourcesAndRetainedSuccess(t *testing.T) {
 	cluster := testCluster(t)
 	results, old := evaluate(t, Sample{Clusters: []kube.Cluster{cluster}}, nil, testNow)
