@@ -99,7 +99,6 @@ func (c *Check) Evaluate(groups []Group, now time.Time) []result.Collection {
 	sort.Strings(ordered)
 	collection := result.Collection{Route: Route, Check: Route, Dimensions: dimensions,
 		Results: map[string]string{"inventory": result.Inventory(missing, unexpected)}}
-	maximum := time.Duration(c.config.MaxAgeSeconds) * time.Second
 	for _, key := range ordered {
 		group, ok := seen[key]
 		item := result.Item{Target: key, Values: map[string]any{}}
@@ -109,7 +108,12 @@ func (c *Check) Evaluate(groups []Group, now time.Time) []result.Collection {
 		case group.Store == "" && group.Type == "" && group.ID == "":
 			item.Results = map[string]string{"freshness": result.Reason("ambiguous")}
 		default:
-			item.Results, item.Values = freshness(group, now, maximum)
+			maximum, single := c.config.MaxAge(key)
+			if !single {
+				item.Results = map[string]string{"freshness": result.Reason("ambiguous")}
+			} else {
+				item.Results, item.Values = freshness(group, now, time.Duration(maximum)*time.Second)
+			}
 			c.observe(group)
 		}
 		collection.Items = append(collection.Items, item)

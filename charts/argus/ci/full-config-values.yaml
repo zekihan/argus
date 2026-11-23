@@ -230,6 +230,12 @@
       "url": "https://192.0.2.63:8007",
       "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "maxAgeSeconds": 93600,
+      "maxAgeOverrides": [
+        {
+          "match": "truenas/vm/401*",
+          "maxAgeSeconds": 698400
+        }
+      ],
       "expected": [
         "truenas/vm/100"
       ],

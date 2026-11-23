@@ -108,3 +108,41 @@ func TestExpectedExcludeAndDuplicates(t *testing.T) {
 		t.Fatalf("discovered group without an expected list = %s", open.Results["inventory"])
 	}
 }
+
+func TestMaxAgeOverride(t *testing.T) {
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	weekly := 8*24*time.Hour + 2*time.Hour
+	cfg := config.PBS{
+		MaxAgeSeconds: 26 * 3600,
+		MaxAgeOverrides: []config.PBSMaxAgeOverride{
+			{Match: "truenas/vm/401*", MaxAgeSeconds: int(weekly / time.Second)},
+			{Match: "truenas/vm/402*", MaxAgeSeconds: int(weekly / time.Second)},
+		},
+	}
+	collection := eval(t, cfg, []Group{
+		group("truenas", "vm", "40101", now.Add(-weekly), ""),
+		group("truenas", "vm", "40102", now.Add(-weekly-time.Second), ""),
+		group("truenas", "vm", "40205", now.Add(-7*24*time.Hour), ""),
+		group("truenas", "vm", "104", now.Add(-26*time.Hour), ""),
+		group("truenas", "vm", "105", now.Add(-26*time.Hour-time.Second), ""),
+		group("truenas", "ct", "116", now.Add(-time.Hour), ""),
+	}, now, nil)
+	if got := item(t, collection, "truenas/vm/40101").Results["freshness"]; got != result.OK {
+		t.Fatalf("weekly limit = %s", got)
+	}
+	if got := item(t, collection, "truenas/vm/40102").Results["freshness"]; !strings.HasPrefix(got, "backup_stale(") {
+		t.Fatalf("past weekly limit = %s", got)
+	}
+	if got := item(t, collection, "truenas/vm/40205").Results["freshness"]; got != result.OK {
+		t.Fatalf("second weekly glob = %s", got)
+	}
+	if got := item(t, collection, "truenas/vm/104").Results["freshness"]; got != result.OK {
+		t.Fatalf("nightly limit = %s", got)
+	}
+	if got := item(t, collection, "truenas/vm/105").Results["freshness"]; !strings.HasPrefix(got, "backup_stale(") {
+		t.Fatalf("past nightly limit = %s", got)
+	}
+	if got := item(t, collection, "truenas/ct/116").Results["freshness"]; got != result.OK {
+		t.Fatalf("unmatched group = %s", got)
+	}
+}

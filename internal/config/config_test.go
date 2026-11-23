@@ -159,6 +159,10 @@ func TestSectionValidation(t *testing.T) {
 		"pbs unpinned":        `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token"}`,
 		"pbs relative token":  `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"token","fingerprint":"` + strings.Repeat("a", 64) + `"}`,
 		"pbs overlap":         `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("a", 64) + `","expected":["truenas/vm/1"],"exclude":["truenas/vm/1"]}`,
+		"pbs glob":            `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("a", 64) + `","maxAgeOverrides":[{"match":"truenas/vm/*","maxAgeSeconds":1},{"match":"truenas/vm/401*","maxAgeSeconds":2}]}`,
+		"pbs glob age":        `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("a", 64) + `","maxAgeOverrides":[{"match":"truenas/vm/401*","maxAgeSeconds":0}]}`,
+		"pbs glob duplicate":  `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("a", 64) + `","maxAgeOverrides":[{"match":"*/*/*","maxAgeSeconds":1},{"match":"*/*/*","maxAgeSeconds":2}]}`,
+		"pbs bad glob":        `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("a", 64) + `","maxAgeOverrides":[{"match":"truenas/vm","maxAgeSeconds":1}]}`,
 		"doh http url":        `"doh":{"url":"http://dns.example.com/dns-query","name":"a.example","expectedIPv4":"1.1.1.1"}`,
 		"doh url query":       `"doh":{"url":"https://dns.example.com/dns-query?dns=x","name":"a.example","expectedIPv4":"1.1.1.1"}`,
 		"doh url credentials": `"doh":{"url":"https://u:p@dns.example.com/dns-query","name":"a.example","expectedIPv4":"1.1.1.1"}`,
@@ -180,6 +184,49 @@ func TestPBSDefaultsAndColonFingerprint(t *testing.T) {
 	c, err := Parse([]byte(`{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/var/run/argus-pbs/token","fingerprint":"AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"}}}`))
 	if err != nil || c.Checks.PBS.MaxAgeSeconds != 26*3600 {
 		t.Fatal(err, c.Checks.PBS)
+	}
+	c, err = Parse([]byte(`{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("ab", 32) + `","maxAgeOverrides":[{"match":"truenas/vm/401*","maxAgeSeconds":698400},{"match":"truenas/vm/402*","maxAgeSeconds":698400}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age, ok := c.Checks.PBS.MaxAge("truenas/vm/40101"); !ok || age != 698400 {
+		t.Fatalf("weekly override = %d %v", age, ok)
+	}
+	if age, ok := c.Checks.PBS.MaxAge("truenas/vm/104"); !ok || age != 26*3600 {
+		t.Fatalf("default max age = %d %v", age, ok)
+	}
+}
+
+func TestPBSGlobOverlapAgreesWithMatch(t *testing.T) {
+	patterns := []string{"a", "b", "*", "?", "a*", "*b", "a?", "?b", "ab", "401*", "402*", "40*", "??"}
+	strings := []string{""}
+	cur := []string{""}
+	for len(cur[0]) < 4 {
+		var next []string
+		for _, s := range cur {
+			for _, c := range []string{"a", "b", "0", "1", "2", "4"} {
+				next = append(next, s+c)
+			}
+		}
+		strings = append(strings, next...)
+		cur = next
+	}
+	overlaps := func(left, right string) bool {
+		for _, sample := range strings {
+			lok, lerr := filepath.Match(left, sample)
+			rok, rerr := filepath.Match(right, sample)
+			if lerr == nil && rerr == nil && lok && rok {
+				return true
+			}
+		}
+		return false
+	}
+	for _, left := range patterns {
+		for _, right := range patterns {
+			if segmentGlobsOverlap(left, right) != overlaps(left, right) {
+				t.Fatalf("%s vs %s: detector %v, samples %v", left, right, segmentGlobsOverlap(left, right), overlaps(left, right))
+			}
+		}
 	}
 }
 
