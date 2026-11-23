@@ -47,8 +47,11 @@ state:
   configMapName: argus-state
 
 # Global timing; each check may override intervalSeconds,
-# collectionTimeoutSeconds and maxSampleAgeSeconds.
+# collectionTimeoutSeconds and maxSampleAgeSeconds. metricsAddress is the
+# internal Prometheus listener (vmagent scrapes :9090/metrics); empty
+# disables it. It is never routed through the ingress.
 config:
+  metricsAddress: ":9090"
   pollIntervalSeconds: 60
   maxSampleAgeSeconds: 180
   requestTimeoutSeconds: 10

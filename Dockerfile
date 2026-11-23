@@ -13,7 +13,7 @@ FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /argus /argus
 USER 25120:25120
-EXPOSE 8443
+EXPOSE 8443 9090
 ENTRYPOINT ["/argus"]
 LABEL org.opencontainers.image.source="https://github.com/zekihan/argus" \
       org.opencontainers.image.licenses="AGPL-3.0" \

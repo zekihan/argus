@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/zekihan/argus/internal/runner"
 	"github.com/zekihan/argus/internal/server"
 	"github.com/zekihan/argus/internal/state"
+	"github.com/zekihan/go-commons/metrics"
 )
 
 var version = "dev"
@@ -159,14 +161,44 @@ func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("cannot listen on %s", cfg.ListenAddress)
 	}
+	// Metrics ride a separate internal listener that is never routed through
+	// the public ingress. An empty metricsAddress disables them.
+	var reg *metrics.Registry
+	if cfg.MetricsAddress != "" {
+		reg = metrics.New()
+		r.SetMetrics(reg)
+	}
+	var metricsListener net.Listener
+	var metricsSrv *http.Server
+	if reg != nil {
+		if metricsListener, err = net.Listen("tcp", cfg.MetricsAddress); err != nil {
+			return fmt.Errorf("cannot listen on metrics %s", cfg.MetricsAddress)
+		}
+		metricsSrv = reg.Server(cfg.MetricsAddress)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if metricsSrv != nil {
+		go func() {
+			if serr := metricsSrv.Serve(metricsListener); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+				logger.Error("Metrics server failed", "error", serr.Error())
+			}
+		}()
+	}
 	names := make([]string, 0, len(built))
 	for _, b := range built {
 		names = append(names, b.Check.Name())
 	}
-	logger.Info("Starting argus", "version", version, "checks", names, "address", cfg.ListenAddress, "tls", cfg.TLS != nil)
-	return server.Serve(ctx, listener, r.Run, r, cfg.TokenFile, certificates, logger)
+	logger.Info("Starting argus", "version", version, "checks", names, "address", cfg.ListenAddress, "metrics", cfg.MetricsAddress, "tls", cfg.TLS != nil)
+	err = server.Serve(ctx, listener, r.Run, r, cfg.TokenFile, certificates, logger, reg)
+	if metricsSrv != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer drainCancel()
+		if shutdownErr := metricsSrv.Shutdown(drainCtx); shutdownErr != nil {
+			err = errors.Join(err, shutdownErr)
+		}
+	}
+	return err
 }
 
 func once(args []string, stdout io.Writer, logger *slog.Logger) error {

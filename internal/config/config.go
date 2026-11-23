@@ -228,6 +228,7 @@ type Checks struct {
 
 type Config struct {
 	ListenAddress            string `json:"listenAddress"`
+	MetricsAddress           string `json:"metricsAddress,omitempty"`
 	TokenFile                string `json:"tokenFile"`
 	TLS                      *TLS   `json:"tls,omitempty"`
 	State                    State  `json:"state"`
@@ -239,7 +240,7 @@ type Config struct {
 }
 
 func Default() Config {
-	return Config{ListenAddress: ":8443", TokenFile: "/var/run/argus-auth/token",
+	return Config{ListenAddress: ":8443", MetricsAddress: ":9090", TokenFile: "/var/run/argus-auth/token",
 		State:               State{Namespace: "argus", Name: "argus-state"},
 		PollIntervalSeconds: 60, MaxSampleAgeSeconds: 180, RequestTimeoutSeconds: 10, CollectionTimeoutSeconds: 45}
 }
@@ -375,6 +376,13 @@ func (c Config) Validate() error {
 	portNumber, err := strconv.Atoi(port)
 	if err != nil || strings.Trim(port, "0123456789") != "" || portNumber < 1 || portNumber > 65535 {
 		return fmt.Errorf("listenAddress port must be between 1 and 65535")
+	}
+	if c.MetricsAddress != "" {
+		if _, port, err := net.SplitHostPort(c.MetricsAddress); err != nil {
+			return fmt.Errorf("metricsAddress must be host:port with a valid port")
+		} else if portNumber, err := strconv.Atoi(port); err != nil || strings.Trim(port, "0123456789") != "" || portNumber < 1 || portNumber > 65535 {
+			return fmt.Errorf("metricsAddress port must be between 1 and 65535")
+		}
 	}
 	if c.TLS != nil && (!absFile(c.TLS.CertFile) || !absFile(c.TLS.KeyFile)) {
 		return fmt.Errorf("tls.certFile and tls.keyFile must be absolute file paths")
