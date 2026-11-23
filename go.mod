@@ -3,7 +3,7 @@ module github.com/zekihan/argus
 go 1.27.4
 
 require (
-	github.com/zekihan/go-commons v1.1.0
+	github.com/zekihan/go-commons v1.2.0
 	golang.org/x/crypto v0.59.0
 )
 

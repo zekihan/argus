@@ -45,6 +45,9 @@ func TestHandlerRecordsRequestsByRouteFamily(t *testing.T) {
 	if recorder := get(t, handler, "/v1/things/ns/a", testToken); recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("collection = %d, want 503", recorder.Code)
 	}
+	if recorder := get(t, handler, "/v1/checks", testToken); recorder.Code != http.StatusOK {
+		t.Fatalf("checks = %d, want 200", recorder.Code)
+	}
 	if recorder := get(t, handler, "/nope", testToken); recorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown = %d, want 404", recorder.Code)
 	}
@@ -52,6 +55,7 @@ func TestHandlerRecordsRequestsByRouteFamily(t *testing.T) {
 	body := scrape(t, reg)
 	for _, want := range []string{
 		`http_requests_total{method="GET",route="/healthz",status="200"} 1`,
+		`http_requests_total{method="GET",route="/v1/checks",status="200"} 1`,
 		`http_requests_total{method="GET",route="/v1/collection",status="503"} 1`,
 		`http_requests_total{method="GET",route="unknown",status="404"} 1`,
 		`http_request_duration_seconds_bucket{method="GET",route="/healthz",status="200"`,
