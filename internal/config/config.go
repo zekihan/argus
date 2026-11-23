@@ -7,6 +7,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,6 +145,21 @@ type ArgoCD struct {
 	ProgressingSeconds        int      `json:"progressingSeconds,omitempty"`
 }
 
+// defaultPBSMaxAgeSeconds is 26h: a nightly vzdump may finish after midnight.
+const defaultPBSMaxAgeSeconds = 26 * 3600
+
+// PBS is the Proxmox Backup Server backup-group check.
+type PBS struct {
+	Schedule
+	URL           string   `json:"url"`
+	TokenFile     string   `json:"tokenFile"`
+	CAFile        string   `json:"caFile,omitempty"`
+	Fingerprint   string   `json:"fingerprint,omitempty"`
+	MaxAgeSeconds int      `json:"maxAgeSeconds,omitempty"`
+	Expected      []string `json:"expected,omitempty"`
+	Exclude       []string `json:"exclude,omitempty"`
+}
+
 type Nodes struct {
 	Schedule
 	Expected                    []string `json:"expected"`
@@ -224,6 +240,7 @@ type Checks struct {
 	PKI             *PKI             `json:"pki,omitempty"`
 	ExternalSecrets *ExternalSecrets `json:"externalsecrets,omitempty"`
 	ArgoCD          *ArgoCD          `json:"argocd,omitempty"`
+	PBS             *PBS             `json:"pbs,omitempty"`
 }
 
 type Config struct {
@@ -331,6 +348,9 @@ func (c *Config) ApplyDefaults() {
 		h.User = orDefaultString(h.User, "argus")
 		h.TimeoutSeconds = orDefault(h.TimeoutSeconds, 30)
 		h.Concurrency = orDefault(h.Concurrency, 8)
+	}
+	if p := k.PBS; p != nil && p.MaxAgeSeconds == 0 {
+		p.MaxAgeSeconds = defaultPBSMaxAgeSeconds
 	}
 }
 
@@ -470,6 +490,7 @@ func (c Config) Enabled() []EnabledCheck {
 	add(k.PKI != nil, "pki", func() Schedule { return k.PKI.Schedule }, func() error { return k.PKI.validate() })
 	add(k.ExternalSecrets != nil, "externalsecrets", func() Schedule { return k.ExternalSecrets.Schedule }, func() error { return k.ExternalSecrets.validate() })
 	add(k.ArgoCD != nil, "argocd", func() Schedule { return k.ArgoCD.Schedule }, func() error { return k.ArgoCD.validate() })
+	add(k.PBS != nil, "pbs", func() Schedule { return k.PBS.Schedule }, func() error { return k.PBS.validate() })
 	return out
 }
 
@@ -682,6 +703,70 @@ func (n *Nodes) validate() error {
 }
 
 var hostName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+var pbsName = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,63})$`)
+
+// PBSName reports whether s is one PBS datastore, backup type, backup id or comment segment.
+func PBSName(s string) bool { return pbsName.MatchString(s) }
+
+func pbsGroup(s string) bool {
+	parts := strings.Split(s, "/")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if !PBSName(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *PBS) validate() error {
+	u, err := url.Parse(p.URL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return fmt.Errorf("url must be an HTTPS origin without credentials, query or fragment")
+	}
+	if !absFile(p.TokenFile) {
+		return fmt.Errorf("tokenFile must be an absolute file path")
+	}
+	if p.CAFile != "" && !absFile(p.CAFile) {
+		return fmt.Errorf("caFile must be an absolute file path")
+	}
+	if p.Fingerprint != "" && !sha256Fingerprint(p.Fingerprint) {
+		return fmt.Errorf("fingerprint must be a SHA-256 digest")
+	}
+	if p.CAFile == "" && p.Fingerprint == "" {
+		return fmt.Errorf("caFile or fingerprint must pin the PBS certificate")
+	}
+	if err := seconds("maxAgeSeconds", p.MaxAgeSeconds, true); err != nil {
+		return err
+	}
+	if err := uniqueNames("expected", p.Expected, false, pbsGroup); err != nil {
+		return err
+	}
+	if err := uniqueNames("exclude", p.Exclude, false, pbsGroup); err != nil {
+		return err
+	}
+	skip := map[string]bool{}
+	for _, key := range p.Exclude {
+		skip[key] = true
+	}
+	for _, key := range p.Expected {
+		if skip[key] {
+			return fmt.Errorf("expected and exclude both contain %s", key)
+		}
+	}
+	return nil
+}
+
+func sha256Fingerprint(s string) bool {
+	s = strings.ToLower(strings.ReplaceAll(s, ":", ""))
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
 
 func (h *Hosts) validate() error {
 	if !Name(h.User) {

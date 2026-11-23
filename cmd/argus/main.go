@@ -140,11 +140,18 @@ func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 		defer client.HTTP.CloseIdleConnections()
 		health = client
 	}
-	built, err := checks.Build(cfg, checks.Deps{API: client, Logger: logger})
+	var reg *metrics.Registry
+	if cfg.MetricsAddress != "" {
+		reg = metrics.New()
+	}
+	built, err := checks.Build(cfg, checks.Deps{API: client, Logger: logger, Metrics: reg})
 	if err != nil {
 		return err
 	}
 	r := runner.New(logger, version, health, time.Duration(cfg.MaxSampleAgeSeconds)*time.Second)
+	if reg != nil {
+		r.SetMetrics(reg)
+	}
 	if client != nil {
 		r.ProbeEvery(client, time.Duration(cfg.PollIntervalSeconds)*time.Second, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
 	}
@@ -163,11 +170,6 @@ func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 	}
 	// Metrics ride a separate internal listener that is never routed through
 	// the public ingress. An empty metricsAddress disables them.
-	var reg *metrics.Registry
-	if cfg.MetricsAddress != "" {
-		reg = metrics.New()
-		r.SetMetrics(reg)
-	}
 	var metricsListener net.Listener
 	var metricsSrv *http.Server
 	if reg != nil {
@@ -299,6 +301,8 @@ func onlyCheck(all config.Checks, name string) config.Checks {
 		only.ExternalSecrets = all.ExternalSecrets
 	case "argocd":
 		only.ArgoCD = all.ArgoCD
+	case "pbs":
+		only.PBS = all.PBS
 	}
 	return only
 }

@@ -41,6 +41,13 @@ ssh:
   secretKey: ssh_private_key
   knownHosts: ""
 
+# PBS API token. Required only when checks.pbs is enabled. ca is an optional
+# PEM bundle; otherwise checks.pbs.fingerprint pins the server leaf.
+pbs:
+  existingSecret: ""
+  secretKey: token
+  ca: ""
+
 # The pgBackRest ledger ConfigMap. The chart creates it once with an empty
 # ledger; it is kept on uninstall and never pruned by Argo CD.
 state:
@@ -126,6 +133,14 @@ checks:
   argocd:
     enabled: false
     namespace: argocd
+  pbs:
+    enabled: false
+    url: ""
+    # 26h, so a nightly vzdump that slips past midnight stays fresh.
+    maxAgeSeconds: 93600
+    fingerprint: ""
+    expected: []
+    exclude: []
 
 service:
   port: 8443

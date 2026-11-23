@@ -253,7 +253,9 @@ func TestOnceFailsClosedForEveryCheck(t *testing.T) {
 		"pki":             `{"checks":{"pki":{"rootSHA256":"` + sha + `","expectedCertificates":[{"namespace":"cert-manager","name":"selfsigned-ca"}]}}}`,
 		"externalsecrets": `{"checks":{"externalsecrets":{"expectedExternalSecrets":[{"namespace":"apps","name":"example"}]}}}`,
 		"argocd":          `{"checks":{"argocd":{"namespace":"argocd","expected":["root"]}}}`,
+		"pbs":             `{"checks":{"pbs":{"url":"https://127.0.0.1:1","tokenFile":"/no/such/pbs-token","fingerprint":"` + strings.Repeat("ab", 32) + `"}}}`,
 	}
+	nonAPI := map[string]bool{"doh": true, "hosts": true, "pbs": true}
 	for name, body := range configs {
 		t.Run(name, func(t *testing.T) {
 			file := filepath.Join(dir, name+".json")
@@ -261,7 +263,7 @@ func TestOnceFailsClosedForEveryCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"once", "-config", file, "-check", name}
-			if name != "doh" && name != "hosts" {
+			if !nonAPI[name] {
 				args = append(args, "-api-url", forbidden.URL)
 			}
 			var stdout bytes.Buffer
@@ -269,8 +271,11 @@ func TestOnceFailsClosedForEveryCheck(t *testing.T) {
 			if !errors.Is(err, errUnhealthy) || strings.Contains(stdout.String(), secret) || strings.Contains(stdout.String(), "no such file") {
 				t.Fatalf("error = %v, stdout = %s", err, stdout.String())
 			}
-			if name != "doh" && name != "hosts" && !strings.Contains(stdout.String(), `"collection": "forbidden"`) {
+			if !nonAPI[name] && !strings.Contains(stdout.String(), `"collection": "forbidden"`) {
 				t.Fatalf("stdout = %s, want a forbidden collection", stdout.String())
+			}
+			if name == "pbs" && !strings.Contains(stdout.String(), "token_unreadable") {
+				t.Fatalf("stdout = %s, want token_unreadable", stdout.String())
 			}
 		})
 	}

@@ -12,6 +12,11 @@
     "existingSecret": "argus-ssh",
     "knownHosts": "192.0.2.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyExampleOnlyExampleOnlyExample\n"
   },
+  "pbs": {
+    "existingSecret": "argus-pbs",
+    "secretKey": "token",
+    "ca": "-----BEGIN CERTIFICATE-----\nMIIBdummy\n-----END CERTIFICATE-----\n"
+  },
   "config": {
     "pollIntervalSeconds": 60,
     "maxSampleAgeSeconds": 180,
@@ -215,6 +220,21 @@
           "namespace": "database",
           "name": "scheduled-job-state"
         }
+      ]
+    },
+    "pbs": {
+      "enabled": true,
+      "intervalSeconds": 120,
+      "collectionTimeoutSeconds": 40,
+      "maxSampleAgeSeconds": 300,
+      "url": "https://192.0.2.63:8007",
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "maxAgeSeconds": 93600,
+      "expected": [
+        "truenas/vm/100"
+      ],
+      "exclude": [
+        "truenas/vm/retired"
       ]
     },
     "doh": {

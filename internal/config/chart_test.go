@@ -102,6 +102,9 @@ func TestFullChartValuesSetEveryConfigField(t *testing.T) {
 		if name == "hosts" {
 			section["privateKeyFile"], section["knownHostsFile"] = "/var/run/argus-ssh/ssh_private_key", "/config/known_hosts"
 		}
+		if name == "pbs" {
+			section["tokenFile"], section["caFile"] = "/var/run/argus-pbs/token", "/config/pbs-ca.pem"
+		}
 		checks[name] = section
 	}
 	rendered["checks"] = checks
@@ -126,7 +129,10 @@ func TestFullChartValuesSetEveryConfigField(t *testing.T) {
 
 // chartManaged are configuration fields the chart sets itself; they are not
 // chart values.
-var chartManaged = map[string]bool{".checks.hosts.privateKeyFile": true, ".checks.hosts.knownHostsFile": true}
+var chartManaged = map[string]bool{
+	".checks.hosts.privateKeyFile": true, ".checks.hosts.knownHostsFile": true,
+	".checks.pbs.tokenFile": true, ".checks.pbs.caFile": true,
+}
 
 // matchSchema requires every struct in t to be a closed schema object whose
 // properties are exactly the struct's JSON fields, so a typo in a check

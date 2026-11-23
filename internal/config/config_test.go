@@ -155,6 +155,10 @@ func TestSectionValidation(t *testing.T) {
 		"pki inventory":       `"pki":{"rootSHA256":"` + strings.Repeat("a", 64) + `","expectedCertificates":[]}`,
 		"eso expected":        `"externalsecrets":{"expectedExternalSecrets":[{"namespace":"a"}]}`,
 		"argocd namespace":    `"argocd":{"namespace":""}`,
+		"pbs http":            `"pbs":{"url":"http://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("a", 64) + `"}`,
+		"pbs unpinned":        `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token"}`,
+		"pbs relative token":  `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"token","fingerprint":"` + strings.Repeat("a", 64) + `"}`,
+		"pbs overlap":         `"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("a", 64) + `","expected":["truenas/vm/1"],"exclude":["truenas/vm/1"]}`,
 		"doh http url":        `"doh":{"url":"http://dns.example.com/dns-query","name":"a.example","expectedIPv4":"1.1.1.1"}`,
 		"doh url query":       `"doh":{"url":"https://dns.example.com/dns-query?dns=x","name":"a.example","expectedIPv4":"1.1.1.1"}`,
 		"doh url credentials": `"doh":{"url":"https://u:p@dns.example.com/dns-query","name":"a.example","expectedIPv4":"1.1.1.1"}`,
@@ -169,6 +173,13 @@ func TestSectionValidation(t *testing.T) {
 				t.Fatal("invalid section accepted", section)
 			}
 		})
+	}
+}
+
+func TestPBSDefaultsAndColonFingerprint(t *testing.T) {
+	c, err := Parse([]byte(`{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/var/run/argus-pbs/token","fingerprint":"AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"}}}`))
+	if err != nil || c.Checks.PBS.MaxAgeSeconds != 26*3600 {
+		t.Fatal(err, c.Checks.PBS)
 	}
 }
 

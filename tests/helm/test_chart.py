@@ -16,7 +16,7 @@ HELM = os.environ.get("HELM", "helm")
 DEFAULTS = CHART / "ci/default-values.yaml"
 ALL_CHECKS = CHART / "ci/all-checks-values.yaml"
 FULL_CONFIG = CHART / "ci/full-config-values.yaml"
-CHECKS = ["doh", "pvcs", "hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd"]
+CHECKS = ["doh", "pvcs", "hosts", "nodes", "postgres", "pgbackrest", "longhorn", "cronjobs", "certificates", "pki", "externalsecrets", "argocd", "pbs"]
 
 
 def run(*args, release="argus", namespace="argus"):
@@ -138,7 +138,7 @@ class ChartTests(unittest.TestCase):
             json.dump(config, f)
             f.flush()
             for check in CHECKS:
-                if check in ("hosts", "doh"):
+                if check in ("hosts", "doh", "pbs"):
                     continue
                 RecordingAPI.requests = []
                 subprocess.run([str(ROOT / "dist/argus"), "once", "-config", f.name, "-check", check, "-api-url", origin], capture_output=True)
@@ -187,6 +187,8 @@ class ChartTests(unittest.TestCase):
         self.assertNotIn("enabled", json.dumps(config))
         self.assertEqual(config["checks"]["hosts"]["privateKeyFile"], "/var/run/argus-ssh/ssh_private_key")
         self.assertEqual(config["checks"]["hosts"]["knownHostsFile"], "/config/known_hosts")
+        self.assertEqual(config["checks"]["pbs"]["tokenFile"], "/var/run/argus-pbs/token")
+        self.assertNotIn("caFile", config["checks"]["pbs"])
         check_config(config)
         known_hosts = next(d for d in kind(docs, "ConfigMap") if "config.json" in d["data"])["data"]["known_hosts"]
         self.assertIn("ssh-ed25519", known_hosts)
@@ -201,6 +203,8 @@ class ChartTests(unittest.TestCase):
             expected = {k: v for k, v in section.items() if k != "enabled"}
             if name == "hosts":
                 expected.update(privateKeyFile="/var/run/argus-ssh/ssh_private_key", knownHostsFile="/config/known_hosts")
+            if name == "pbs":
+                expected.update(tokenFile="/var/run/argus-pbs/token", caFile="/config/pbs-ca.pem")
             self.assertEqual(config["checks"][name], expected, name)
 
     def test_rbac_matches_the_design(self):
@@ -263,6 +267,7 @@ class ChartTests(unittest.TestCase):
         # The union of single-check grants is exactly the all-checks grant.
         self.assertEqual(set().union(*only.values()), everything)
         self.assertEqual(only["hosts"], set())
+        self.assertEqual(only["pbs"], set())
         self.assertEqual(only["argocd"], {("Role", "argocd", "argoproj.io", "applications", "list")})
         self.assertEqual({p for p in everything if p[3] == "configmaps"}, {("Role", "argus", "", "configmaps", "get"), ("Role", "argus", "", "configmaps", "update")})
         self.assertTrue({p for p in everything if p[3] == "configmaps"} <= only["pgbackrest"])
@@ -309,6 +314,8 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(volumes["api-auth"]["secret"], {"secretName": "chart-validation-only", "defaultMode": 0o440, "items": [{"key": "token", "path": "token"}]})
         self.assertEqual(volumes["tls"]["secret"]["secretName"], "argus-tls")
         self.assertEqual(volumes["ssh"]["secret"]["items"], [{"key": "ssh_private_key", "path": "ssh_private_key"}])
+        self.assertEqual(volumes["pbs"]["secret"]["items"], [{"key": "token", "path": "token"}])
+        self.assertEqual(volumes["pbs"]["secret"]["secretName"], "argus-pbs")
         self.assertFalse(kind(docs, "Secret"))
         config = config_of(docs)
         self.assertEqual(config["tokenFile"], mounts["api-auth"]["mountPath"] + "/token")
