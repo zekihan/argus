@@ -15,6 +15,7 @@ import (
 
 	"github.com/zekihan/argus/internal/kube"
 	"github.com/zekihan/argus/internal/result"
+	"github.com/zekihan/go-commons/metrics"
 )
 
 // Check collects one or more collections per sample.
@@ -82,6 +83,7 @@ type Runner struct {
 	api       HealthSource
 	apiMaxAge time.Duration
 	entries   []*entry
+	reg       *metrics.Registry
 
 	prober        Prober
 	probeInterval time.Duration
@@ -184,6 +186,7 @@ func (r *Runner) refreshEntry(ctx context.Context, e *entry) {
 	if err != nil {
 		e.failure = Code(err)
 		e.mu.Unlock()
+		r.observeFailure(e.described)
 		// Only the fixed code is logged: errors may wrap response details.
 		r.logger.Error("Collection failed", "check", e.check.Name(), "code", e.failure)
 		return
@@ -193,6 +196,7 @@ func (r *Runner) refreshEntry(ctx context.Context, e *entry) {
 	items, unhealthy := 0, 0
 	for _, c := range collections {
 		aggregate := c.Aggregate(result.OK, now, now)
+		r.observeCollection(c.Route, aggregate.Healthy)
 		r.transition(e, "/v1/"+c.Route, aggregate.Summary)
 		for target, summary := range aggregate.Items {
 			items++

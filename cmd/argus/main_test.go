@@ -349,6 +349,18 @@ func TestServeDecisionPaths(t *testing.T) {
 	if err := run([]string{"serve", "-config", busy}, &bytes.Buffer{}, logger); err == nil || err.Error() != "cannot listen on "+held.Addr().String() {
 		t.Fatalf("busy address = %v", err)
 	}
+	metricsHeld, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metricsHeld.Close()
+	metricsBusy := filepath.Join(dir, "metrics-busy.json")
+	if err := os.WriteFile(metricsBusy, []byte(fmt.Sprintf(`{"listenAddress":"127.0.0.1:%d","metricsAddress":%q,"checks":{"doh":{"url":"https://127.0.0.1:1/dns-query","name":"example.com","expectedIPv4":"192.0.2.1"}}}`, freePort(t), metricsHeld.Addr().String())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"serve", "-config", metricsBusy}, &bytes.Buffer{}, logger); err == nil || err.Error() != "cannot listen on metrics "+metricsHeld.Addr().String() {
+		t.Fatalf("busy metrics address = %v", err)
+	}
 
 	const secret = "secret-api-body"
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -378,6 +390,24 @@ func TestServeDecisionPaths(t *testing.T) {
 	body := waitGET(t, base+"/v1/nodes", token)
 	if !strings.Contains(body, `"collection":"forbidden"`) || strings.Contains(body, secret) {
 		t.Fatalf("nodes = %s", body)
+	}
+	// The default metrics listener serves collection health and request
+	// counts on :9090/metrics without authentication.
+	metricsDeadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := http.Get("http://127.0.0.1:9090/metrics") //nolint:noctx,bodyclose // test-only loop with a deadline
+		if err == nil {
+			data, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if strings.Contains(string(data), `argus_collection_healthy{collection="nodes"}`) &&
+				strings.Contains(string(data), `http_requests_total{method="GET",route="/healthz",status="200"}`) {
+				break
+			}
+		}
+		if time.Now().After(metricsDeadline) {
+			t.Fatal("metrics missing collection health or request counts")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)

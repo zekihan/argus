@@ -20,7 +20,8 @@ each decision was made; read it before changing a decision.
 
 ## Conventions
 
-- Go standard library only, plus `golang.org/x/crypto/ssh` for the hosts check. No client-go.
+- Go standard library only, plus `golang.org/x/crypto/ssh` for the hosts check and
+  `github.com/zekihan/go-commons/metrics` for the internal Prometheus listener. No client-go.
 - Strict JSON config: unknown fields rejected; fields added after a chart release must be optional.
 - Results are fixed reason codes with allowlisted parameters. Never put raw condition messages, API
   response bodies, spec fields or Go error strings into responses or logs.

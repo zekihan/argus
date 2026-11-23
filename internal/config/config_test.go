@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -230,5 +231,32 @@ func TestPVCConfigDefaultsAndValidation(t *testing.T) {
 		if c.Validate() == nil {
 			t.Fatal(c.Checks.PVCs)
 		}
+	}
+}
+
+func TestMetricsAddressDefaultsDisablesAndValidates(t *testing.T) {
+	empty, err := Parse([]byte(`{}`))
+	if err != nil || empty.MetricsAddress != ":9090" {
+		t.Fatal("metricsAddress must default to :9090", empty.MetricsAddress, err)
+	}
+	disabled, err := Parse([]byte(`{"metricsAddress":""}`))
+	if err != nil || disabled.MetricsAddress != "" {
+		t.Fatal("an empty metricsAddress must disable metrics", err)
+	}
+	custom, err := Parse([]byte(`{"metricsAddress":"127.0.0.1:9091"}`))
+	if err != nil || custom.MetricsAddress != "127.0.0.1:9091" {
+		t.Fatal("a custom metricsAddress must load", err)
+	}
+	for name, address := range map[string]string{
+		"no port":    "9090",
+		"bad port":   ":phonetic",
+		"port zero":  ":0",
+		"port range": ":99999",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(`{"metricsAddress":` + strconv.Quote(address) + `}`)); err == nil {
+				t.Fatal("invalid metricsAddress accepted", address)
+			}
+		})
 	}
 }

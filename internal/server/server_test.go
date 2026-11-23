@@ -54,7 +54,7 @@ func writeToken(t *testing.T, value string) string {
 
 func TestAuthorizationOnEveryRouteButHealthz(t *testing.T) {
 	path := writeToken(t, testToken+"\n")
-	handler := Handler(fakeRoutes{}, path)
+	handler := Handler(fakeRoutes{}, path, nil)
 	for _, route := range []string{"/v1/checks", "/v1/things", "/v1/things/ns/a", "/v1/unknown", "/unknown", "/v1/"} {
 		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
 			for _, header := range []string{"", "Bearer wrong", "Basic " + testToken} {
@@ -135,7 +135,7 @@ func (unencodableRoutes) Lookup(string, time.Time) (int, any) {
 }
 
 func TestUnencodableResponseFailsClosed(t *testing.T) {
-	handler := Handler(unencodableRoutes{}, writeToken(t, testToken))
+	handler := Handler(unencodableRoutes{}, writeToken(t, testToken), nil)
 	for method, wantBody := range map[string]string{
 		http.MethodGet:  "{\"reason\":\"response_encoding_error\"}\n",
 		http.MethodHead: "",
@@ -204,7 +204,7 @@ func TestServesTLSAndFollowsCertificateRenewal(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, listener, func(ctx context.Context) { <-ctx.Done() }, fakeRoutes{}, writeToken(t, testToken), reloader, nil)
+		done <- Serve(ctx, listener, func(ctx context.Context) { <-ctx.Done() }, fakeRoutes{}, writeToken(t, testToken), reloader, nil, nil)
 	}()
 	if name := servedName(t, listener.Addr().String()); name != "first" {
 		t.Fatal(name)
@@ -256,7 +256,7 @@ func TestServeBoundsWaitForBlockedPoller(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- serve(ctx, listener, func(context.Context) { close(started); <-release }, fakeRoutes{}, "", nil,
-			slog.New(slog.NewTextHandler(io.Discard, nil)), 50*time.Millisecond)
+			slog.New(slog.NewTextHandler(io.Discard, nil)), nil, 50*time.Millisecond)
 	}()
 	select {
 	case <-started:

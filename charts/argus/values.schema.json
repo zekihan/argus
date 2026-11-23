@@ -108,6 +108,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "metricsAddress": {
+          "type": "string"
+        },
         "pollIntervalSeconds": {
           "type": "integer",
           "minimum": 1,

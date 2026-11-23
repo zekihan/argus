@@ -16,7 +16,8 @@
     "pollIntervalSeconds": 60,
     "maxSampleAgeSeconds": 180,
     "requestTimeoutSeconds": 10,
-    "collectionTimeoutSeconds": 45
+    "collectionTimeoutSeconds": 45,
+    "metricsAddress": ":9090"
   },
   "checks": {
     "hosts": {

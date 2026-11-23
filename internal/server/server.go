@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zekihan/argus/internal/runner"
+	"github.com/zekihan/go-commons/metrics"
 )
 
 // Routes is what the handler serves.
@@ -35,8 +36,10 @@ func write(w http.ResponseWriter, r *http.Request, code int, payload any) {
 	}
 }
 
-func Handler(routes Routes, tokenFile string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// Handler serves the versioned HTTP/JSON API. When reg is not nil, requests
+// are counted and timed by method, route family and status.
+func Handler(routes Routes, tokenFile string, reg *metrics.Registry) http.Handler {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -69,18 +72,41 @@ func Handler(routes Routes, tokenFile string) http.Handler {
 			write(w, r, http.StatusNotFound, map[string]string{"reason": "unknown route"})
 		}
 	})
+	if reg == nil {
+		return inner
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reg.Middleware(inner).ServeHTTP(w, metrics.WithRoute(r, apiRoute(r.URL.Path)))
+	})
+}
+
+// apiRoute names the route family of a request for metrics: exact routes by
+// name, collection and item paths as one family, everything else unknown.
+// Raw paths never become label values.
+func apiRoute(path string) string {
+	switch {
+	case path == "/healthz":
+		return "/healthz"
+	case path == "/v1/checks":
+		return "/v1/checks"
+	case strings.HasPrefix(path, "/v1/"):
+		return "/v1/collection"
+	default:
+		return "unknown"
+	}
 }
 
 // Serve runs the poller and the HTTP server, and drains both on cancellation.
 // With certificates it serves TLS only, re-reading the files as they change.
-func Serve(ctx context.Context, listener net.Listener, run func(context.Context), routes Routes, tokenFile string, certificates *Reloader, logger *slog.Logger) error {
-	return serve(ctx, listener, run, routes, tokenFile, certificates, logger, 15*time.Second)
+// A non-nil reg counts and times API requests by method, route and status.
+func Serve(ctx context.Context, listener net.Listener, run func(context.Context), routes Routes, tokenFile string, certificates *Reloader, logger *slog.Logger, reg *metrics.Registry) error {
+	return serve(ctx, listener, run, routes, tokenFile, certificates, logger, reg, 15*time.Second)
 }
 
-func serve(ctx context.Context, listener net.Listener, run func(context.Context), routes Routes, tokenFile string, certificates *Reloader, logger *slog.Logger, shutdownTimeout time.Duration) error {
+func serve(ctx context.Context, listener net.Listener, run func(context.Context), routes Routes, tokenFile string, certificates *Reloader, logger *slog.Logger, reg *metrics.Registry, shutdownTimeout time.Duration) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	server := &http.Server{Handler: Handler(routes, tokenFile), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+	server := &http.Server{Handler: Handler(routes, tokenFile, reg), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 * 1024,
 		// TLS handshake failures from scanners are not actionable and may echo client data.
 		ErrorLog: slog.NewLogLogger(slog.DiscardHandler, slog.LevelError)}

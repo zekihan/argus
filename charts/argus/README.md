@@ -38,6 +38,7 @@ networkPolicy:
 | `ssh.existingSecret`, `secretKey`, `knownHosts` | the hosts check's private key and reviewed known_hosts; required only with `checks.hosts` |
 | `state.configMapName` | `argus-state`, the pgBackRest ledger |
 | `config.*` | global poll interval, sample lifetime, request and collection timeouts |
+| `config.metricsAddress` | `:9090`, the internal Prometheus listener (`/metrics`); empty disables it; never routed through the ingress |
 | `checks.<name>.enabled` | false; every other key is the check's configuration section |
 | `serviceAccount.*`, `rbac.create` | dedicated account; RBAC from enabled checks |
 | `networkPolicy.*` | ingress TCP 8443 from `ingressFrom`; egress to `apiPeers`, DNS, and TCP to each host (IPv4 addresses are derived, others need `sshPeers`) |
