@@ -138,6 +138,8 @@ checks:
     url: ""
     # 26h, so a nightly vzdump that slips past midnight stays fresh.
     maxAgeSeconds: 93600
+    # Globs of store/type/id. * and ? stay inside one segment.
+    maxAgeOverrides: []
     fingerprint: ""
     expected: []
     exclude: []

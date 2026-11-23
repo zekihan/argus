@@ -148,16 +148,26 @@ type ArgoCD struct {
 // defaultPBSMaxAgeSeconds is 26h: a nightly vzdump may finish after midnight.
 const defaultPBSMaxAgeSeconds = 26 * 3600
 
+// PBSMaxAgeOverride replaces maxAgeSeconds for backup groups whose key matches
+// Match. Match is store/type/id; * and ? apply inside one segment and do not
+// cross a slash. The first listed override is not special: overlapping matches
+// are rejected.
+type PBSMaxAgeOverride struct {
+	Match         string `json:"match"`
+	MaxAgeSeconds int    `json:"maxAgeSeconds"`
+}
+
 // PBS is the Proxmox Backup Server backup-group check.
 type PBS struct {
 	Schedule
-	URL           string   `json:"url"`
-	TokenFile     string   `json:"tokenFile"`
-	CAFile        string   `json:"caFile,omitempty"`
-	Fingerprint   string   `json:"fingerprint,omitempty"`
-	MaxAgeSeconds int      `json:"maxAgeSeconds,omitempty"`
-	Expected      []string `json:"expected,omitempty"`
-	Exclude       []string `json:"exclude,omitempty"`
+	URL             string              `json:"url"`
+	TokenFile       string              `json:"tokenFile"`
+	CAFile          string              `json:"caFile,omitempty"`
+	Fingerprint     string              `json:"fingerprint,omitempty"`
+	MaxAgeSeconds   int                 `json:"maxAgeSeconds,omitempty"`
+	MaxAgeOverrides []PBSMaxAgeOverride `json:"maxAgeOverrides,omitempty"`
+	Expected        []string            `json:"expected,omitempty"`
+	Exclude         []string            `json:"exclude,omitempty"`
 }
 
 type Nodes struct {
@@ -741,6 +751,9 @@ func (p *PBS) validate() error {
 	if err := seconds("maxAgeSeconds", p.MaxAgeSeconds, true); err != nil {
 		return err
 	}
+	if err := p.validateMaxAgeOverrides(); err != nil {
+		return err
+	}
 	if err := uniqueNames("expected", p.Expected, false, pbsGroup); err != nil {
 		return err
 	}
@@ -757,6 +770,189 @@ func (p *PBS) validate() error {
 		}
 	}
 	return nil
+}
+
+func (p *PBS) validateMaxAgeOverrides() error {
+	if len(p.MaxAgeOverrides) > 5000 {
+		return fmt.Errorf("maxAgeOverrides exceeds 5000 entries")
+	}
+	seen := map[string]bool{}
+	for i, override := range p.MaxAgeOverrides {
+		if !pbsGlob(override.Match) || seen[override.Match] {
+			return fmt.Errorf("invalid or duplicate maxAgeOverrides match: %s", override.Match)
+		}
+		seen[override.Match] = true
+		if err := seconds(fmt.Sprintf("maxAgeOverrides[%d].maxAgeSeconds", i), override.MaxAgeSeconds, true); err != nil {
+			return err
+		}
+		for _, earlier := range p.MaxAgeOverrides[:i] {
+			if pbsGlobsOverlap(earlier.Match, override.Match) {
+				return fmt.Errorf("maxAgeOverrides match %s overlaps %s", earlier.Match, override.Match)
+			}
+		}
+	}
+	return nil
+}
+
+// MaxAge returns the freshness limit for a backup group key. The second result
+// is false when more than one override matches.
+func (p PBS) MaxAge(group string) (int, bool) {
+	matched := 0
+	seconds := p.MaxAgeSeconds
+	for _, override := range p.MaxAgeOverrides {
+		ok, err := filepath.Match(override.Match, group)
+		if err != nil || !ok {
+			continue
+		}
+		matched++
+		seconds = override.MaxAgeSeconds
+	}
+	if matched > 1 {
+		return 0, false
+	}
+	return seconds, true
+}
+
+var pbsGlobSegment = regexp.MustCompile(`^[A-Za-z0-9_.*?-]+$`)
+
+func pbsGlob(s string) bool {
+	parts := strings.Split(s, "/")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if !pbsGlobSegment.MatchString(part) {
+			return false
+		}
+		if _, err := filepath.Match(part, "a"); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// pbsGlobsOverlap reports whether any store/type/id key can match both globs.
+func pbsGlobsOverlap(a, b string) bool {
+	left, right := strings.Split(a, "/"), strings.Split(b, "/")
+	if len(left) != 3 || len(right) != 3 {
+		return false
+	}
+	for i := range left {
+		if !segmentGlobsOverlap(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// segmentGlobsOverlap reports whether two single-segment globs (* and ?) match
+// a common string. The product of their NFAs accepts when they do.
+func segmentGlobsOverlap(a, b string) bool {
+	literals := map[byte]int{}
+	for _, pattern := range []string{a, b} {
+		for i := range len(pattern) {
+			c := pattern[i]
+			if c != '*' && c != '?' {
+				if _, ok := literals[c]; !ok {
+					literals[c] = len(literals)
+				}
+			}
+		}
+	}
+	other := len(literals)
+	symbols := other + 1
+	symbol := func(c byte) int {
+		if id, ok := literals[c]; ok {
+			return id
+		}
+		return other
+	}
+	type machine struct {
+		eps    [][]int
+		trans  [][][]int
+		accept int
+	}
+	build := func(pattern string) machine {
+		n := len(pattern) + 1
+		m := machine{eps: make([][]int, n), trans: make([][][]int, n), accept: len(pattern)}
+		for i := range m.trans {
+			m.trans[i] = make([][]int, symbols)
+		}
+		for i := range len(pattern) {
+			switch pattern[i] {
+			case '*':
+				m.eps[i] = append(m.eps[i], i+1)
+				for s := range symbols {
+					m.trans[i][s] = append(m.trans[i][s], i)
+				}
+			case '?':
+				for s := range symbols {
+					m.trans[i][s] = append(m.trans[i][s], i+1)
+				}
+			default:
+				s := symbol(pattern[i])
+				m.trans[i][s] = append(m.trans[i][s], i+1)
+			}
+		}
+		return m
+	}
+	left, right := build(a), build(b)
+	type pair struct{ i, j int }
+	close := func(start pair) []pair {
+		seen := map[pair]bool{start: true}
+		queue := []pair{start}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, i := range left.eps[cur.i] {
+				next := pair{i, cur.j}
+				if !seen[next] {
+					seen[next] = true
+					queue = append(queue, next)
+				}
+			}
+			for _, j := range right.eps[cur.j] {
+				next := pair{cur.i, j}
+				if !seen[next] {
+					seen[next] = true
+					queue = append(queue, next)
+				}
+			}
+		}
+		out := make([]pair, 0, len(seen))
+		for item := range seen {
+			out = append(out, item)
+		}
+		return out
+	}
+	seen := map[pair]bool{}
+	var queue []pair
+	push := func(items []pair) {
+		for _, item := range items {
+			if !seen[item] {
+				seen[item] = true
+				queue = append(queue, item)
+			}
+		}
+	}
+	push(close(pair{}))
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.i == left.accept && cur.j == right.accept {
+			return true
+		}
+		for s := range symbols {
+			var moved []pair
+			for _, i := range left.trans[cur.i][s] {
+				for _, j := range right.trans[cur.j][s] {
+					moved = append(moved, close(pair{i, j})...)
+				}
+			}
+			push(moved)
+		}
+	}
+	return false
 }
 
 func sha256Fingerprint(s string) bool {
