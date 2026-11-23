@@ -32,7 +32,7 @@ collection listed there does not by itself make it 503.
 
 | Route | Body |
 | --- | --- |
-| `/metrics` on `:9090` (`metricsAddress`, empty disables) | Prometheus exposition: `http_requests_total` and `http_request_duration_seconds` by method, route and status, `argus_collection_healthy` by collection, plus Go runtime and process metrics; internal only, never through the ingress |
+| `/metrics` on `:9090` (`metricsAddress`, empty disables) | Prometheus exposition: `http_requests_total` and `http_request_duration_seconds` by method, route and status, `argus_collection_healthy` by collection, `argus_pbs_last_backup_timestamp_seconds` by datastore, backup type and backup id, plus Go runtime and process metrics; internal only, never through the ingress |
 | `/v1/<collection>/<item>` | one item: `results` per dimension plus `collection`, raw `values` |
 | `/v1/<collection>` | per dimension `ok` or the failing items, plus `collection` and `inventory`; `items` gives each item's verdict |
 | `/v1/checks` | every route and its verdict; `results.apiserver` and `results.sample_fresh` describe the process |
@@ -45,7 +45,7 @@ current pod has watched. With nightly `edge` updates, a 7-day window rarely elap
 
 Collections: `doh`, `pvcs`, `hosts`, `nodes`, `postgres`, `pgbackrest`, `longhorn/volumes`, `longhorn/system`,
 `cronjobs`, `certificates`, `pki`, `externalsecrets`, `clusterexternalsecrets`, `secretstores`,
-`clustersecretstores`, `argocd`.
+`clustersecretstores`, `argocd`, `pbs/backups`.
 
 ```json
 {"check":"longhorn/volume","target":"immich/library","healthy":false,

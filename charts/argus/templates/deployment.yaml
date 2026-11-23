@@ -1,5 +1,12 @@
 {{- $authSecret := required "accessControl.existingSecret must name an existing API token Secret" .Values.accessControl.existingSecret -}}
 {{- $hosts := .Values.checks.hosts.enabled -}}
+{{- $pbs := .Values.checks.pbs.enabled -}}
+{{- if and $pbs (not .Values.pbs.existingSecret) -}}
+{{- fail "pbs.existingSecret must name the PBS token Secret when checks.pbs is enabled" -}}
+{{- end -}}
+{{- if and $pbs (not .Values.checks.pbs.fingerprint) (not .Values.pbs.ca) -}}
+{{- fail "checks.pbs.fingerprint or pbs.ca must pin the PBS certificate" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,6 +84,11 @@ spec:
               mountPath: /var/run/argus-ssh
               readOnly: true
             {{- end }}
+            {{- if $pbs }}
+            - name: pbs
+              mountPath: /var/run/argus-pbs
+              readOnly: true
+            {{- end }}
       volumes:
         - name: kubernetes-api-access
           projected:
@@ -124,6 +136,15 @@ spec:
             items:
               - key: {{ .Values.ssh.secretKey | quote }}
                 path: ssh_private_key
+        {{- end }}
+        {{- if $pbs }}
+        - name: pbs
+          secret:
+            secretName: {{ .Values.pbs.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.pbs.secretKey | default "token" | quote }}
+                path: token
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

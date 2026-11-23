@@ -36,6 +36,7 @@ networkPolicy:
 | `tls.enabled`, `existingSecret` | native TLS on 8443 from a Secret with `tls.crt`/`tls.key`, re-read when it changes |
 | `tls.certificate.create`, `issuerRef`, `dnsNames` | optional cert-manager Certificate `<fullname>-tls`; DNS names default to the Service names |
 | `ssh.existingSecret`, `secretKey`, `knownHosts` | the hosts check's private key and reviewed known_hosts; required only with `checks.hosts` |
+| `pbs.existingSecret`, `secretKey`, `ca` | the PBS API token (`user@realm!tokenid:secret`) and an optional PEM CA; required only with `checks.pbs`. `checks.pbs.fingerprint` or `pbs.ca` pins the server certificate |
 | `state.configMapName` | `argus-state`, the pgBackRest ledger |
 | `config.*` | global poll interval, sample lifetime, request and collection timeouts |
 | `config.metricsAddress` | `:9090`, the internal Prometheus listener (`/metrics`); empty disables it; never routed through the ingress |
@@ -58,6 +59,7 @@ networkPolicy:
 | externalsecrets | ClusterRole get/list ExternalSecrets, ClusterExternalSecrets, SecretStores, ClusterSecretStores |
 | argocd | Role list `applications` in the Argo CD namespace |
 | hosts | none |
+| pbs | none (PBS API token from `pbs.existingSecret`; certificate pinned by fingerprint or `pbs.ca`) |
 
 No rule grants Secrets, pods or `nodes/proxy`. The service-account token is
 projected only into the Argus container. Every Role namespace must be a

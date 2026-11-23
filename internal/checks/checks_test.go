@@ -3,6 +3,7 @@ package checks
 import (
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,7 @@ func TestKubernetes(t *testing.T) {
 		{"doh only", dohJSON, false},
 		{"hosts only", `{"checks":{"hosts":{"privateKeyFile":"/tmp/key","knownHostsFile":"/tmp/known","hosts":[{"name":"bastion","address":"192.0.2.10"}]}}}`, false},
 		{"doh and hosts", `{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"example.com","expectedIPv4":"192.0.2.1"},"hosts":{"privateKeyFile":"/tmp/key","knownHostsFile":"/tmp/known","hosts":[{"name":"bastion","address":"192.0.2.10"}]}}}`, false},
+		{"pbs only", `{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/tmp/pbs-token","fingerprint":"` + strings.Repeat("a", 64) + `"}}}`, false},
 		{"nodes needs the API", `{"checks":{"nodes":{"expected":["node-a"]}}}`, true},
 		{"doh plus cronjobs needs the API", `{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"example.com","expectedIPv4":"192.0.2.1"},"cronjobs":{"items":[{"namespace":"app","name":"job","maxAgeSeconds":60}]}}}`, true},
 	} {
@@ -86,7 +88,8 @@ const everyCheckJSON = `{
     "certificates": {"expected":[{"namespace":"web","name":"site"}]},
     "pki": {"rootSHA256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expectedCertificates":[{"namespace":"cert-manager","name":"selfsigned-ca"}],"expectedBundles":["bridge-ca"]},
     "externalsecrets": {"expectedExternalSecrets":[{"namespace":"apps","name":"example"}],"expectedSecretStores":[{"namespace":"apps","name":"vault"}]},
-    "argocd": {"namespace":"argocd","expected":["root"]}
+    "argocd": {"namespace":"argocd","expected":["root"]},
+    "pbs": {"url":"https://192.0.2.63:8007","tokenFile":"/tmp/pbs-token","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
   }
 }`
 

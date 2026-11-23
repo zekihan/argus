@@ -9,12 +9,15 @@ import (
 	"github.com/zekihan/argus/internal/config"
 	"github.com/zekihan/argus/internal/kube"
 	"github.com/zekihan/argus/internal/runner"
+	"github.com/zekihan/go-commons/metrics"
 )
 
 // Deps are the shared dependencies of every check.
 type Deps struct {
 	API    *kube.Client
 	Logger *slog.Logger
+	// Metrics is the process registry. Nil when the metrics listener is disabled.
+	Metrics *metrics.Registry
 	// ReadOnly checks never write: argus once evaluates against stored state.
 	ReadOnly bool
 }
@@ -52,7 +55,9 @@ func Build(cfg config.Config, deps Deps) ([]Built, error) {
 // Kubernetes reports whether any enabled check talks to the Kubernetes API.
 func Kubernetes(cfg config.Config) bool {
 	for _, enabled := range cfg.Enabled() {
-		if enabled.Name != "hosts" && enabled.Name != "doh" {
+		switch enabled.Name {
+		case "hosts", "doh", "pbs":
+		default:
 			return true
 		}
 	}

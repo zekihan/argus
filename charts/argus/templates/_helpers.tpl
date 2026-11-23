@@ -69,6 +69,12 @@ chart-managed paths, and one section per enabled check without "enabled".
 {{- $_ := set $copy "privateKeyFile" "/var/run/argus-ssh/ssh_private_key" -}}
 {{- $_ := set $copy "knownHostsFile" "/config/known_hosts" -}}
 {{- end -}}
+{{- if eq $name "pbs" -}}
+{{- $_ := set $copy "tokenFile" "/var/run/argus-pbs/token" -}}
+{{- if $.Values.pbs.ca -}}
+{{- $_ := set $copy "caFile" "/config/pbs-ca.pem" -}}
+{{- end -}}
+{{- end -}}
 {{- $_ := set $checks $name $copy -}}
 {{- end -}}
 {{- end -}}

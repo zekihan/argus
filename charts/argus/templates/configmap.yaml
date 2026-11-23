@@ -12,3 +12,7 @@ data:
   known_hosts: |
     {{- required "ssh.knownHosts must hold the reviewed known_hosts when checks.hosts is enabled" .Values.ssh.knownHosts | nindent 4 }}
   {{- end }}
+  {{- if and .Values.checks.pbs.enabled .Values.pbs.ca }}
+  pbs-ca.pem: |
+    {{- .Values.pbs.ca | nindent 4 }}
+  {{- end }}

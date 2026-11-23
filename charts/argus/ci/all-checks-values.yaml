@@ -12,7 +12,13 @@ ssh:
   existingSecret: argus-ssh
   knownHosts: |
     192.0.2.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyExampleOnlyExampleOnlyExample
+pbs:
+  existingSecret: argus-pbs
 checks:
+  pbs:
+    enabled: true
+    url: https://192.0.2.63:8007
+    fingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   doh:
     enabled: true
     url: https://dns.example.com/dns-query
