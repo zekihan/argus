@@ -41,13 +41,18 @@ func TestAPICollectsEachNamespaceAndStopsOnForbidden(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = (API{Client: client, Namespaces: Namespaces(cfg)}).Collect(t.Context())
-	if err == nil || kube.CodeOf(err) != kube.CodeForbidden || strings.Contains(err.Error(), secret) {
+	if err == nil || kube.CodeOf(err) != kube.CodeForbidden ||
+		strings.Contains(err.Error(), secret) {
 		t.Fatal(err)
 	}
-	if strings.Join(paths, ",") != "/apis/batch/v1/namespaces/app/cronjobs,/apis/batch/v1/namespaces/app/jobs" {
+	if strings.Join(
+		paths,
+		",",
+	) != "/apis/batch/v1/namespaces/app/cronjobs,/apis/batch/v1/namespaces/app/jobs" {
 		t.Fatal(paths)
 	}
-	h := checktest.New(New(inventory("a", "b", 10800), &fakeAPI{err: errors.New(secret)}), now).Refresh(t)
+	h := checktest.New(New(inventory("a", "b", 10800), &fakeAPI{err: errors.New(secret)}), now).
+		Refresh(t)
 	if code, e := h.Get(t, Route); code != 503 || e.Results["collection"] != "collection_error" {
 		t.Fatal(e.Results)
 	}
@@ -57,10 +62,17 @@ func TestAPICollectsEachNamespaceAndStopsOnForbidden(t *testing.T) {
 }
 
 func TestUnparseableJobTimeDoesNotBecomeASuccess(t *testing.T) {
-	c := decode[CronJob](t, `{"metadata":{"namespace":"a","name":"b","uid":"cron-uid"},"status":{"lastSuccessfulTime":"2026-11-07T12:00:00Z","lastScheduleTime":"not-a-time"}}`)
-	job := decode[Job](t, `{"metadata":{"name":"b-1","namespace":"a","creationTimestamp":"not-a-time","ownerReferences":[{"kind":"CronJob","uid":"cron-uid","controller":true}]},
-		"status":{"conditions":[{"type":"Failed","status":"True","message":"secret-job-log"}]}}`)
-	h := checktest.New(New(inventory("a", "b", 10800), &fakeAPI{sample: Sample{CronJobs: []CronJob{c}, Jobs: []Job{job}}}), now).Refresh(t)
+	c := decode[CronJob](
+		t,
+		`{"metadata":{"namespace":"a","name":"b","uid":"cron-uid"},"status":{"lastSuccessfulTime":"2026-11-07T12:00:00Z","lastScheduleTime":"not-a-time"}}`,
+	)
+	job := decode[Job](
+		t,
+		`{"metadata":{"name":"b-1","namespace":"a","creationTimestamp":"not-a-time","ownerReferences":[{"kind":"CronJob","uid":"cron-uid","controller":true}]},
+		"status":{"conditions":[{"type":"Failed","status":"True","message":"secret-job-log"}]}}`,
+	)
+	h := checktest.New(New(inventory("a", "b", 10800), &fakeAPI{sample: Sample{CronJobs: []CronJob{c}, Jobs: []Job{job}}}), now).
+		Refresh(t)
 	_, e := h.Get(t, Route+"/a/b")
 	if e.Results["last_run"] != "failed" || e.Results["schedule"] != result.OK {
 		t.Fatal(e.Results)

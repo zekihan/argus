@@ -22,24 +22,30 @@ type transportFunc func(*http.Request) (*http.Response, error)
 
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func tlsClient(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.Server) {
+func tlsClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
 	dir := t.TempDir()
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
-	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), ca, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), ca, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("first"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("first"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	client, err := New(server.URL, filepath.Join(dir, "token"), filepath.Join(dir, "ca.crt"), "test", time.Second)
+	client, err := New(
+		server.URL,
+		filepath.Join(dir, "token"),
+		filepath.Join(dir, "ca.crt"),
+		"test",
+		time.Second,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(client.HTTP.CloseIdleConnections)
-	return client, server
+	return client
 }
 
 type named struct {
@@ -62,7 +68,7 @@ func collect(ctx context.Context, c *Client) ([]named, error) {
 func TestPaginationAndTokenRotation(t *testing.T) {
 	var client *Client
 	var calls atomic.Int32
-	client, _ = tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
+	client = tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
 		call := calls.Add(1)
 		want := "Bearer rotated"
 		if call == 1 {
@@ -71,7 +77,8 @@ func TestPaginationAndTokenRotation(t *testing.T) {
 		if r.Header.Get("Authorization") != want {
 			t.Errorf("token was not reread at request %d", call)
 		}
-		if r.URL.Query().Get("limit") != "200" || r.URL.Query().Get("labelSelector") != Prefix+"pgbackrest-backup" {
+		if r.URL.Query().Get("limit") != "200" ||
+			r.URL.Query().Get("labelSelector") != Prefix+"pgbackrest-backup" {
 			t.Error("missing page bound or selector")
 		}
 		metadata := map[string]string{"resourceVersion": "1"}
@@ -79,14 +86,15 @@ func TestPaginationAndTokenRotation(t *testing.T) {
 			metadata["continue"] = "next"
 		}
 		if call == 1 {
-			if err := os.WriteFile(client.TokenFile+".new", []byte("rotated"), 0600); err != nil {
+			if err := os.WriteFile(client.TokenFile+".new", []byte("rotated"), 0o600); err != nil {
 				t.Error(err)
 			}
 			if err := os.Rename(client.TokenFile+".new", client.TokenFile); err != nil {
 				t.Error(err)
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"metadata": metadata, "items": []any{map[string]any{"metadata": map[string]string{"name": "page-object"}}}})
+		_ = json.NewEncoder(w).
+			Encode(map[string]any{"metadata": metadata, "items": []any{map[string]any{"metadata": map[string]string{"name": "page-object"}}}})
 	})
 	items, err := collect(t.Context(), client)
 	if err != nil || len(items) != 6 || calls.Load() != 6 {
@@ -106,13 +114,20 @@ func TestPaginationFailureDiscardsPartialSample(t *testing.T) {
 		"wrong shape":      `{"metadata":{},"items":{}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(reply)) })
-			if items, err := collect(t.Context(), client); err == nil || len(items) != 0 || CodeOf(err) != CodeInvalid {
+			client := tlsClient(
+				t,
+				func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(reply)) },
+			)
+			if items, err := collect(
+				t.Context(),
+				client,
+			); err == nil || len(items) != 0 ||
+				CodeOf(err) != CodeInvalid {
 				t.Fatal("partial sample escaped", items, err)
 			}
 		})
 	}
-	client, _ := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/postgresclusters") {
 			_, _ = w.Write([]byte(`{"metadata":{},"items":[{}]}`))
 			return
@@ -121,10 +136,14 @@ func TestPaginationFailureDiscardsPartialSample(t *testing.T) {
 		_, _ = w.Write([]byte("sensitive-secret-body"))
 	})
 	items, err := collect(t.Context(), client)
-	if err == nil || len(items) != 0 || strings.Contains(err.Error(), "sensitive") || CodeOf(err) != CodeForbidden {
+	if err == nil || len(items) != 0 || strings.Contains(err.Error(), "sensitive") ||
+		CodeOf(err) != CodeForbidden {
 		t.Fatal(items, err)
 	}
-	if h := client.Health(time.Time{}); h.ForbiddenPaths != 1 || h.OKPaths != 1 || !h.LastFailure.IsZero() {
+	if h := client.Health(
+		time.Time{},
+	); h.ForbiddenPaths != 1 || h.OKPaths != 1 ||
+		!h.LastFailure.IsZero() {
 		t.Fatal("refusals not recorded as missing permissions", h)
 	}
 }
@@ -132,7 +151,7 @@ func TestPaginationFailureDiscardsPartialSample(t *testing.T) {
 func TestHealthTracksTheLatestOutcome(t *testing.T) {
 	var status atomic.Int32
 	status.Store(200)
-	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(int(status.Load()))
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -150,7 +169,11 @@ func TestHealthTracksTheLatestOutcome(t *testing.T) {
 	}
 	status.Store(200)
 	_ = client.Get(t.Context(), "/version", &out)
-	if recovered := client.Health(time.Time{}); !recovered.LastSuccess.After(recovered.LastFailure) {
+	if recovered := client.Health(
+		time.Time{},
+	); !recovered.LastSuccess.After(
+		recovered.LastFailure,
+	) {
 		t.Fatal("recovery not recorded", recovered)
 	}
 }
@@ -158,9 +181,15 @@ func TestHealthTracksTheLatestOutcome(t *testing.T) {
 func TestInvalidDiscoveryResponseRecordsFailure(t *testing.T) {
 	const discovery = `{"kind":"APIVersions","versions":["v1"]}`
 	body := discovery
-	client := &Client{BaseURL: "https://api.example", HTTP: &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
-	})}}
+	client := &Client{
+		BaseURL: "https://api.example",
+		HTTP: &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})},
+	}
 	if err := client.Probe(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +200,8 @@ func TestInvalidDiscoveryResponseRecordsFailure(t *testing.T) {
 		t.Fatalf("discovery error = %v, want %s", err, CodeInvalid)
 	}
 	failed := client.Health(time.Time{})
-	if failed.FailureCode != CodeInvalid || !failed.LastFailure.After(good.LastSuccess) || !failed.LastSuccess.Equal(good.LastSuccess) {
+	if failed.FailureCode != CodeInvalid || !failed.LastFailure.After(good.LastSuccess) ||
+		!failed.LastSuccess.Equal(good.LastSuccess) {
 		t.Fatalf("invalid discovery reported as successful: %+v", failed)
 	}
 
@@ -179,7 +209,11 @@ func TestInvalidDiscoveryResponseRecordsFailure(t *testing.T) {
 	if err := client.Probe(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if recovered := client.Health(time.Time{}); !recovered.LastSuccess.After(recovered.LastFailure) {
+	if recovered := client.Health(
+		time.Time{},
+	); !recovered.LastSuccess.After(
+		recovered.LastFailure,
+	) {
 		t.Fatalf("discovery recovery not reflected: %+v", recovered)
 	}
 }
@@ -188,7 +222,7 @@ func TestInvalidDiscoveryResponseRecordsFailure(t *testing.T) {
 // stops at its first refused read, so its other paths are never re-read.
 func TestRevokedPermissionsOutliveEarlierSuccesses(t *testing.T) {
 	var revoked atomic.Bool
-	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		if revoked.Load() {
 			w.WriteHeader(http.StatusForbidden)
 			return
@@ -214,7 +248,7 @@ func TestRevokedPermissionsOutliveEarlierSuccesses(t *testing.T) {
 // One aggregated API or conversion webhook failing is that check's problem,
 // not the API server's: it must not trip the apiserver gate.
 func TestAggregatedAPIFailureIsNotAnAPIFailure(t *testing.T) {
-	client, _ := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/apis/metrics.k8s.io/") {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -224,13 +258,23 @@ func TestAggregatedAPIFailureIsNotAnAPIFailure(t *testing.T) {
 	if err := client.Probe(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := List[named](t.Context(), client, "/apis/metrics.k8s.io/v1beta1/nodes", ""); CodeOf(err) != CodeHTTP {
+	if _, err := List[named](
+		t.Context(),
+		client,
+		"/apis/metrics.k8s.io/v1beta1/nodes",
+		"",
+	); CodeOf(
+		err,
+	) != CodeHTTP {
 		t.Fatal(err)
 	}
 	if h := client.Health(time.Time{}); !h.LastFailure.IsZero() || h.LastSuccess.IsZero() {
 		t.Fatal("aggregated API failure recorded as API-wide", h)
 	}
-	core, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	core := tlsClient(
+		t,
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) },
+	)
 	_, _ = List[named](t.Context(), core, "/api/v1/nodes", "")
 	if h := core.Health(time.Time{}); h.FailureCode != CodeHTTP {
 		t.Fatal("core API failure not recorded", h)
@@ -239,7 +283,7 @@ func TestAggregatedAPIFailureIsNotAnAPIFailure(t *testing.T) {
 
 func TestStatusCodesMapToFixedCodes(t *testing.T) {
 	for status, code := range map[int]string{401: CodeUnauthorized, 403: CodeForbidden, 404: CodeNotFound, 409: CodeConflict, 500: CodeHTTP, 429: CodeHTTP} {
-		client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte("token=secret-body"))
 		})
@@ -253,7 +297,7 @@ func TestStatusCodesMapToFixedCodes(t *testing.T) {
 
 func TestRetryCancellationAndRedirect(t *testing.T) {
 	var calls atomic.Int32
-	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) <= 2 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -263,14 +307,21 @@ func TestRetryCancellationAndRedirect(t *testing.T) {
 	if _, err := collect(t.Context(), client); err != nil || calls.Load() != 5 {
 		t.Fatal(calls.Load(), err)
 	}
-	blocked, _ := tlsClient(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	blocked := tlsClient(
+		t,
+		func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() },
+	)
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if _, err := collect(ctx, blocked); err == nil || time.Since(start) > time.Second || CodeOf(err) != CodeTimeout {
+	if _, err := collect(
+		ctx,
+		blocked,
+	); err == nil || time.Since(start) > time.Second ||
+		CodeOf(err) != CodeTimeout {
 		t.Fatal("cancellation not bounded", err)
 	}
-	redirect, _ := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
+	redirect := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://example.invalid/credentials", http.StatusFound)
 	})
 	if _, err := collect(t.Context(), redirect); err == nil {
@@ -280,29 +331,32 @@ func TestRetryCancellationAndRedirect(t *testing.T) {
 
 func TestPageBudgetAndChangedSnapshot(t *testing.T) {
 	var page atomic.Int32
-	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		n := page.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]any{"continue": n, "resourceVersion": "1"}, "items": []any{}})
+		_ = json.NewEncoder(w).
+			Encode(map[string]any{"metadata": map[string]any{"continue": n, "resourceVersion": "1"}, "items": []any{}})
 	})
 	// Continuation fields must be strings, even on an otherwise empty response.
 	if _, err := collect(t.Context(), client); err == nil {
 		t.Fatal("malformed metadata accepted")
 	}
-	client, _ = tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client = tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		n := page.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]string{"continue": time.Unix(int64(n), 0).String(), "resourceVersion": "1"}, "items": []any{}})
+		_ = json.NewEncoder(w).
+			Encode(map[string]any{"metadata": map[string]string{"continue": time.Unix(int64(n), 0).String(), "resourceVersion": "1"}, "items": []any{}})
 	})
 	page.Store(0)
 	if _, err := collect(t.Context(), client); err == nil || page.Load() != 100 {
 		t.Fatal("page budget not enforced", page.Load(), err)
 	}
 	page.Store(0)
-	client, _ = tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client = tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		version := "1"
 		if page.Add(1) > 1 {
 			version = "2"
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]string{"continue": "next", "resourceVersion": version}, "items": []any{}})
+		_ = json.NewEncoder(w).
+			Encode(map[string]any{"metadata": map[string]string{"continue": "next", "resourceVersion": version}, "items": []any{}})
 	})
 	if _, err := collect(t.Context(), client); err == nil {
 		t.Fatal("changed snapshot accepted")
@@ -310,8 +364,10 @@ func TestPageBudgetAndChangedSnapshot(t *testing.T) {
 }
 
 func TestInvalidClientConfiguration(t *testing.T) {
-	for _, origin := range []string{"http://localhost", "http://example.com:8001", "http://10.0.0.1:8001", "https://user:password@localhost",
-		"https://localhost/path", "https://localhost?token=secret", "http://127.0.0.1:8001/path"} {
+	for _, origin := range []string{
+		"http://localhost", "http://example.com:8001", "http://10.0.0.1:8001", "https://user:password@localhost",
+		"https://localhost/path", "https://localhost?token=secret", "http://127.0.0.1:8001/path",
+	} {
 		if _, err := New(origin, "token", "ca", "test", time.Second); err == nil {
 			t.Fatal(origin)
 		}
@@ -323,7 +379,9 @@ func TestLoopbackProxyOriginSendsNoToken(t *testing.T) {
 		if r.Header.Get("Authorization") != "" {
 			t.Error("credential sent to a plain-HTTP origin")
 		}
-		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"name":"a"}}]}`))
+		_, _ = w.Write(
+			[]byte(`{"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"name":"a"}}]}`),
+		)
 	}))
 	defer server.Close()
 	for _, origin := range []string{server.URL, strings.Replace(server.URL, "127.0.0.1", "localhost", 1)} {
@@ -353,7 +411,7 @@ func TestCollectionRetriesBodyReadFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 				if calls.Add(1) <= tc.failures {
 					w.Header().Set("Content-Length", "1024")
 					_, _ = w.Write([]byte(`{"metadata":{"sensitive-secret-body":`))
@@ -377,19 +435,43 @@ func TestCollectionRetriesBodyReadFailures(t *testing.T) {
 func TestTotalSizeAndPageCountBudgets(t *testing.T) {
 	var calls atomic.Int32
 	padding := strings.Repeat(" ", 12*1024*1024)
-	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		n := calls.Add(1)
-		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1","continue":"` + strconv.Itoa(int(n)) + `"},"items":[]}` + padding))
+		_, _ = w.Write(
+			[]byte(
+				`{"metadata":{"resourceVersion":"1","continue":"` + strconv.Itoa(
+					int(n),
+				) + `"},"items":[]}` + padding,
+			),
+		)
 	})
-	if _, err := List[named](t.Context(), client, "/x", ""); CodeOf(err) != CodeBudget || calls.Load() != 3 {
+	if _, err := List[named](
+		t.Context(),
+		client,
+		"/x",
+		"",
+	); CodeOf(err) != CodeBudget ||
+		calls.Load() != 3 {
 		t.Fatal("cumulative size budget not enforced", calls.Load(), err)
 	}
 	calls.Store(0)
-	client, _ = tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client = tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		n := calls.Add(1)
-		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1","continue":"` + strconv.Itoa(int(n)) + `"},"items":[]}`))
+		_, _ = w.Write(
+			[]byte(
+				`{"metadata":{"resourceVersion":"1","continue":"` + strconv.Itoa(
+					int(n),
+				) + `"},"items":[]}`,
+			),
+		)
 	})
-	if _, err := List[named](t.Context(), client, "/x", ""); CodeOf(err) != CodeBudget || calls.Load() != 100 {
+	if _, err := List[named](
+		t.Context(),
+		client,
+		"/x",
+		"",
+	); CodeOf(err) != CodeBudget ||
+		calls.Load() != 100 {
 		t.Fatal("page budget not enforced", calls.Load(), err)
 	}
 }
@@ -397,27 +479,43 @@ func TestTotalSizeAndPageCountBudgets(t *testing.T) {
 func TestOversizedPageIsNotRetried(t *testing.T) {
 	var calls atomic.Int32
 	body := strings.Repeat(" ", 16*1024*1024+1)
-	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		_, _ = w.Write([]byte(body))
 	})
-	if _, err := collect(t.Context(), client); err == nil || calls.Load() != 1 || CodeOf(err) != CodeBudget {
+	if _, err := collect(
+		t.Context(),
+		client,
+	); err == nil || calls.Load() != 1 ||
+		CodeOf(err) != CodeBudget {
 		t.Fatal("oversized response was accepted or retried", calls.Load(), err)
 	}
 }
 
 func TestCanceledBodyReadIsNotRetried(t *testing.T) {
 	flushed := make(chan struct{})
-	client, _ := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"metadata":`))
-		w.(http.Flusher).Flush()
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("response writer is not a Flusher")
+			return
+		}
+		flusher.Flush()
 		close(flushed)
 		<-r.Context().Done()
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go func() { <-flushed; cancel() }()
-	data, retry, err := client.request(ctx, http.MethodGet, "/apis/"+ClusterAPI+"/postgresclusters", url.Values{}, nil, nil)
+	data, retry, err := client.request(
+		ctx,
+		http.MethodGet,
+		"/apis/"+ClusterAPI+"/postgresclusters",
+		url.Values{},
+		nil,
+		nil,
+	)
 	if err == nil || retry || data != nil {
 		t.Fatal("canceled response was accepted or marked retryable", data, retry, err)
 	}
@@ -432,13 +530,21 @@ func TestBodyReadTimeoutOnlyTripsAPIGateForCoreAPI(t *testing.T) {
 		{"/apis/metrics.k8s.io/v1beta1/nodes", ""},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			client := &Client{BaseURL: "https://api.example", HTTP: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
-				var body io.Reader = strings.NewReader(`{"kind":"APIVersions","versions":["v1"]}`)
-				if r.URL.Path == tc.path {
-					body = iotest.ErrReader(os.ErrDeadlineExceeded)
-				}
-				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}, nil
-			})}}
+			client := &Client{
+				BaseURL: "https://api.example",
+				HTTP: &http.Client{
+					Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+						var body io.Reader = strings.NewReader(`{"kind":"APIVersions","versions":["v1"]}`)
+						if r.URL.Path == tc.path {
+							body = iotest.ErrReader(os.ErrDeadlineExceeded)
+						}
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Body:       io.NopCloser(body),
+						}, nil
+					}),
+				},
+			}
 			if err := client.Probe(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -454,9 +560,14 @@ func TestBodyReadTimeoutOnlyTripsAPIGateForCoreAPI(t *testing.T) {
 }
 
 func TestTruncatedChunkedPage(t *testing.T) {
-	client, _ := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"metadata":`))
-		w.(http.Flusher).Flush()
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("response writer is not a Flusher")
+			return
+		}
+		flusher.Flush()
 	})
 	items, err := collect(t.Context(), client)
 	if err == nil || len(items) != 0 {
@@ -464,29 +575,57 @@ func TestTruncatedChunkedPage(t *testing.T) {
 	}
 }
 
+// assertUpdatePut checks one PUT body and reports its resourceVersion.
+// A first PUT returns "7" and earns the version-8 success response.
+type putObject struct {
+	Metadata struct {
+		ResourceVersion string            `json:"resourceVersion"`
+		Labels          map[string]string `json:"labels"`
+	} `json:"metadata"`
+	Data map[string]string `json:"data"`
+}
+
+func assertUpdatePut(
+	t *testing.T,
+	puts *atomic.Int32,
+	body []byte,
+	w http.ResponseWriter,
+) string {
+	t.Helper()
+	var object putObject
+	if err := json.Unmarshal(
+		body,
+		&object,
+	); err != nil || object.Metadata.Labels["keep"] != "me" ||
+		object.Data["pgbackrest.json"] != "new" {
+		t.Errorf("update lost metadata or data: %s", body)
+	}
+	if puts.Add(1) == 1 && object.Metadata.ResourceVersion == "7" {
+		_, _ = w.Write(
+			[]byte(`{"metadata":{"resourceVersion":"8"},"data":{"pgbackrest.json":"new"}}`),
+		)
+		return "7"
+	}
+	return ""
+}
+
 func TestConfigMapConditionalUpdatePreservesMetadata(t *testing.T) {
 	var puts atomic.Int32
-	client, _ := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
+	client := tlsClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/namespaces/argus/configmaps/argus-state" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 		switch r.Method {
 		case http.MethodGet:
-			_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"argus-state","namespace":"argus","resourceVersion":"7","labels":{"keep":"me"}},"data":{"pgbackrest.json":"old"}}`))
+			_, _ = w.Write(
+				[]byte(
+					`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"argus-state","namespace":"argus","resourceVersion":"7","labels":{"keep":"me"}},"data":{"pgbackrest.json":"old"}}`,
+				),
+			)
 		case http.MethodPut:
 			body, _ := io.ReadAll(r.Body)
-			var object struct {
-				Metadata struct {
-					ResourceVersion string            `json:"resourceVersion"`
-					Labels          map[string]string `json:"labels"`
-				} `json:"metadata"`
-				Data map[string]string `json:"data"`
-			}
-			if err := json.Unmarshal(body, &object); err != nil || object.Metadata.Labels["keep"] != "me" || object.Data["pgbackrest.json"] != "new" {
-				t.Errorf("update lost metadata or data: %s", body)
-			}
-			if puts.Add(1) == 1 && object.Metadata.ResourceVersion == "7" {
-				_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"8"},"data":{"pgbackrest.json":"new"}}`))
+			resourceVersion := assertUpdatePut(t, &puts, body, w)
+			if resourceVersion == "7" {
 				return
 			}
 			w.WriteHeader(http.StatusConflict)
@@ -497,15 +636,33 @@ func TestConfigMapConditionalUpdatePreservesMetadata(t *testing.T) {
 	if err != nil || current.ResourceVersion != "7" || current.Data["pgbackrest.json"] != "old" {
 		t.Fatal(current, err)
 	}
-	updated, err := client.UpdateConfigMap(t.Context(), "argus", "argus-state", current, map[string]string{"pgbackrest.json": "new"})
+	updated, err := client.UpdateConfigMap(
+		t.Context(),
+		"argus",
+		"argus-state",
+		current,
+		map[string]string{"pgbackrest.json": "new"},
+	)
 	if err != nil || updated.ResourceVersion != "8" {
 		t.Fatal(updated, err)
 	}
-	_, err = client.UpdateConfigMap(t.Context(), "argus", "argus-state", current, map[string]string{"pgbackrest.json": "new"})
+	_, err = client.UpdateConfigMap(
+		t.Context(),
+		"argus",
+		"argus-state",
+		current,
+		map[string]string{"pgbackrest.json": "new"},
+	)
 	if !IsConflict(err) || strings.Contains(err.Error(), "secret") || puts.Load() != 2 {
 		t.Fatal("conflict not reported or retried", err, puts.Load())
 	}
-	if _, err := client.UpdateConfigMap(t.Context(), "argus", "argus-state", ConfigMap{}, nil); err == nil {
+	if _, err := client.UpdateConfigMap(
+		t.Context(),
+		"argus",
+		"argus-state",
+		ConfigMap{},
+		nil,
+	); err == nil {
 		t.Fatal("update without a prior read accepted")
 	}
 }

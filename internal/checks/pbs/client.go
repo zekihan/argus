@@ -47,7 +47,11 @@ type API struct {
 // NewAPI builds a client that verifies the PBS certificate with the configured
 // CA, fingerprint, or both. The token file is read on each request.
 func NewAPI(c config.PBS) (*API, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("default HTTP transport is not *http.Transport")
+	}
+	transport := defaultTransport.Clone()
 	transport.Proxy = nil
 	tlsConfig, err := tlsConfig(c)
 	if err != nil {
@@ -57,10 +61,34 @@ func NewAPI(c config.PBS) (*API, error) {
 	return &API{
 		base:  strings.TrimRight(c.URL, "/"),
 		token: c.TokenFile,
-		client: &http.Client{Transport: transport, Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}},
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   0,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}, nil
+}
+
+// pinnedVerifier verifies the leaf certificate against the fingerprint.
+func pinnedVerifier(fingerprint []byte) func(raw [][]byte, verified [][]*x509.Certificate) error {
+	return func(raw [][]byte, verified [][]*x509.Certificate) error {
+		var leaf []byte
+		if len(verified) > 0 && len(verified[0]) > 0 {
+			leaf = verified[0][0].Raw
+		} else if len(raw) > 0 {
+			leaf = raw[0]
+		}
+		if leaf == nil || !fingerprintMatch(leaf, fingerprint) {
+			return errTLS
+		}
+		cert, err := x509.ParseCertificate(leaf)
+		if err != nil || time.Now().Before(cert.NotBefore) || time.Now().After(cert.NotAfter) {
+			return errTLS
+		}
+		return nil
+	}
 }
 
 func tlsConfig(c config.PBS) (*tls.Config, error) {
@@ -72,7 +100,7 @@ func tlsConfig(c config.PBS) (*tls.Config, error) {
 		}
 		fingerprint = decoded
 	}
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, SessionTicketsDisabled: true}
 	if c.CAFile != "" {
 		pem, err := os.ReadFile(c.CAFile)
 		if err != nil {
@@ -93,22 +121,7 @@ func tlsConfig(c config.PBS) (*tls.Config, error) {
 	if cfg.RootCAs == nil {
 		cfg.InsecureSkipVerify = true
 	}
-	cfg.VerifyPeerCertificate = func(raw [][]byte, verified [][]*x509.Certificate) error {
-		var leaf []byte
-		if len(verified) > 0 && len(verified[0]) > 0 {
-			leaf = verified[0][0].Raw
-		} else if len(raw) > 0 {
-			leaf = raw[0]
-		}
-		if leaf == nil || !fingerprintMatch(leaf, fingerprint) {
-			return errTLS
-		}
-		cert, err := x509.ParseCertificate(leaf)
-		if err != nil || time.Now().Before(cert.NotBefore) || time.Now().After(cert.NotAfter) {
-			return errTLS
-		}
-		return nil
-	}
+	cfg.VerifyPeerCertificate = pinnedVerifier(fingerprint)
 	return cfg, nil
 }
 

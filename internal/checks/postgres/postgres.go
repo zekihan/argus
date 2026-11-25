@@ -111,8 +111,16 @@ func (c *Check) Evaluate(clusters []Cluster, now time.Time) result.Collection {
 		cluster, ok := byKey[e.Key()]
 		if !ok {
 			missing = append(missing, e.Key())
-			collection.Items = append(collection.Items, result.Item{Target: e.Key(), Values: map[string]any{},
-				Results: map[string]string{"instances": result.Reason("missing"), "proxy": result.NA, "conditions": result.NA, "scheduled_backups": result.NA}})
+			collection.Items = append(collection.Items, result.Item{
+				Target: e.Key(),
+				Values: map[string]any{},
+				Results: map[string]string{
+					"instances":         result.Reason("missing"),
+					"proxy":             result.NA,
+					"conditions":        result.NA,
+					"scheduled_backups": result.NA,
+				},
+			})
 			continue
 		}
 		collection.Items = append(collection.Items, evaluate(e.Key(), cluster, now))
@@ -133,6 +141,58 @@ func desired(r *int) int {
 	return *r
 }
 
+// instancesResult evaluates the instances dimension.
+func instancesResult(cluster Cluster, values map[string]any) string {
+	status := cluster.Status
+	spec := cluster.Spec.Instances
+	var failing []result.Param
+	ready, want := 0, 0
+	for _, si := range spec {
+		n := desired(si.Replicas)
+		want += n
+		found := false
+		for _, s := range status.Instances {
+			if s.Name == si.Name {
+				found = true
+				ready += s.ReadyReplicas
+				if s.ReadyReplicas < n || s.UpdatedReplicas < n {
+					failing = append(failing, result.Name(si.Name))
+				}
+			}
+		}
+		if !found {
+			failing = append(failing, result.Name(si.Name))
+		}
+	}
+	values["instancesReady"], values["instancesDesired"] = ready, want
+	if len(spec) == 0 {
+		return result.Reason("no_instances")
+	}
+	if len(failing) > 0 {
+		return result.Reason("not_ready", failing...)
+	}
+	return result.OK
+}
+
+// proxyResult evaluates the proxy dimension.
+func proxyResult(cluster Cluster, values map[string]any) string {
+	status := cluster.Status
+	if cluster.Spec.Proxy == nil || cluster.Spec.Proxy.PGBouncer == nil {
+		return result.NA
+	}
+	n := desired(cluster.Spec.Proxy.PGBouncer.Replicas)
+	got := status.Proxy.PGBouncer.ReadyReplicas
+	values["proxyReady"], values["proxyDesired"] = got, n
+	if got < n {
+		return result.Reason(
+			"not_ready",
+			result.Labeled("ready", result.Int(int64(got))),
+			result.Labeled("desired", result.Int(int64(n))),
+		)
+	}
+	return result.OK
+}
+
 func evaluate(key string, cluster Cluster, now time.Time) result.Item {
 	results := map[string]string{}
 	values := map[string]any{}
@@ -142,42 +202,8 @@ func evaluate(key string, cluster Cluster, now time.Time) result.Item {
 		results["instances"], results["proxy"] = result.NA, result.NA
 		values["shutdown"] = true
 	} else {
-		var failing []result.Param
-		ready, want := 0, 0
-		for _, spec := range cluster.Spec.Instances {
-			n := desired(spec.Replicas)
-			want += n
-			found := false
-			for _, s := range status.Instances {
-				if s.Name == spec.Name {
-					found = true
-					ready += s.ReadyReplicas
-					if s.ReadyReplicas < n || s.UpdatedReplicas < n {
-						failing = append(failing, result.Name(spec.Name))
-					}
-				}
-			}
-			if !found {
-				failing = append(failing, result.Name(spec.Name))
-			}
-		}
-		results["instances"] = result.OK
-		if len(cluster.Spec.Instances) == 0 {
-			results["instances"] = result.Reason("no_instances")
-		} else if len(failing) > 0 {
-			results["instances"] = result.Reason("not_ready", failing...)
-		}
-		values["instancesReady"], values["instancesDesired"] = ready, want
-		results["proxy"] = result.NA
-		if cluster.Spec.Proxy != nil && cluster.Spec.Proxy.PGBouncer != nil {
-			n := desired(cluster.Spec.Proxy.PGBouncer.Replicas)
-			got := status.Proxy.PGBouncer.ReadyReplicas
-			values["proxyReady"], values["proxyDesired"] = got, n
-			results["proxy"] = result.OK
-			if got < n {
-				results["proxy"] = result.Reason("not_ready", result.Labeled("ready", result.Int(int64(got))), result.Labeled("desired", result.Int(int64(n))))
-			}
-		}
+		results["instances"] = instancesResult(cluster, values)
+		results["proxy"] = proxyResult(cluster, values)
 	}
 	// Any present condition that is False; absent conditions are not failures.
 	var falseTypes []string

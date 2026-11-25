@@ -8,6 +8,9 @@ import (
 
 func init() {
 	register("externalsecrets", func(cfg config.Config, deps Deps) (runner.Check, error) {
-		return externalsecrets.New(*cfg.Checks.ExternalSecrets, externalsecrets.API{Client: deps.API}), nil
+		return externalsecrets.New(
+			*cfg.Checks.ExternalSecrets,
+			externalsecrets.API{Client: deps.API},
+		), nil
 	})
 }

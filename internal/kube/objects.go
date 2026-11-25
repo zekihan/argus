@@ -1,7 +1,7 @@
 package kube
 
 import (
-	"fmt"
+	"errors"
 	"math"
 	"regexp"
 	"strconv"
@@ -35,17 +35,19 @@ func ConditionTrue(conditions []Condition, kind string) bool {
 	return ok && c.Status == "True"
 }
 
-var rfc3339 = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-](0\d|1\d|2[0-3]):[0-5]\d)$`)
+var rfc3339 = regexp.MustCompile(
+	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-](0\d|1\d|2[0-3]):[0-5]\d)$`,
+)
 
 // ParseTime parses an RFC 3339 timestamp that carries a zone; naive or
 // otherwise malformed values are errors.
 func ParseTime(value string) (time.Time, error) {
 	if !rfc3339.MatchString(value) {
-		return time.Time{}, fmt.Errorf("malformed timestamp")
+		return time.Time{}, errors.New("malformed timestamp")
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("malformed timestamp")
+		return time.Time{}, errors.New("malformed timestamp")
 	}
 	return parsed.UTC(), nil
 }
@@ -60,20 +62,38 @@ func OwnedBy(meta Metadata, kind, uid string) bool {
 	return false
 }
 
-var quantity = regexp.MustCompile(`^([+-]?[0-9.]+(?:[eE][+-]?[0-9]+)?)(n|u|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`)
+var quantity = regexp.MustCompile(
+	`^([+-]?[0-9.]+(?:[eE][+-]?[0-9]+)?)(n|u|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`,
+)
 
-var suffixes = map[string]float64{"": 1, "n": 1e-9, "u": 1e-6, "m": 1e-3, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18,
-	"Ki": 1 << 10, "Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40, "Pi": 1 << 50, "Ei": 1 << 60}
+var suffixes = map[string]float64{
+	"":   1,
+	"n":  1e-9,
+	"u":  1e-6,
+	"m":  1e-3,
+	"k":  1e3,
+	"M":  1e6,
+	"G":  1e9,
+	"T":  1e12,
+	"P":  1e15,
+	"E":  1e18,
+	"Ki": 1 << 10,
+	"Mi": 1 << 20,
+	"Gi": 1 << 30,
+	"Ti": 1 << 40,
+	"Pi": 1 << 50,
+	"Ei": 1 << 60,
+}
 
 // Quantity parses a Kubernetes resource quantity into base units.
 func Quantity(value string) (float64, error) {
 	match := quantity.FindStringSubmatch(strings.TrimSpace(value))
 	if match == nil {
-		return 0, fmt.Errorf("malformed quantity")
+		return 0, errors.New("malformed quantity")
 	}
 	number, err := strconv.ParseFloat(match[1], 64)
 	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-		return 0, fmt.Errorf("malformed quantity")
+		return 0, errors.New("malformed quantity")
 	}
 	return number * suffixes[match[2]], nil
 }

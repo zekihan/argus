@@ -27,18 +27,6 @@ type configMapServer struct {
 	slowCommit bool
 }
 
-func (s *configMapServer) object() []byte {
-	data, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{"name": "argus-state", "namespace": "argus", "resourceVersion": strconv.Itoa(s.version), "labels": map[string]string{"keep": "me"}},
-		"data":     map[string]string{state.Key: s.data}})
-	return data
-}
-
-func (s *configMapServer) set(data string) {
-	s.data = data
-	s.version++
-}
-
 func (s *configMapServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/api/v1/namespaces/argus/configmaps/argus-state" {
 		w.WriteHeader(http.StatusNotFound)
@@ -69,7 +57,9 @@ func (s *configMapServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} `json:"metadata"`
 		Data map[string]string `json:"data"`
 	}
-	if json.Unmarshal(raw, &object) != nil || object.Metadata.ResourceVersion != strconv.Itoa(s.version) || object.Metadata.Labels["keep"] != "me" {
+	if json.Unmarshal(raw, &object) != nil ||
+		object.Metadata.ResourceVersion != strconv.Itoa(s.version) ||
+		object.Metadata.Labels["keep"] != "me" {
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusConflict)
 		return
@@ -79,9 +69,32 @@ func (s *configMapServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	slow := s.slowCommit && attempt == 0
 	s.mu.Unlock()
 	if slow {
-		time.Sleep(300 * time.Millisecond)
+		<-time.After(300 * time.Millisecond)
 	}
 	_, _ = w.Write(body)
+}
+
+func (s *configMapServer) object() []byte {
+	data, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]any{
+			"name":            "argus-state",
+			"namespace":       "argus",
+			"resourceVersion": strconv.Itoa(s.version),
+			"labels":          map[string]string{"keep": "me"},
+		},
+		"data": map[string]string{state.Key: s.data},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+func (s *configMapServer) set(data string) {
+	s.data = data
+	s.version++
 }
 
 func (s *configMapServer) stored(t *testing.T) (state.Ledger, error) {
@@ -103,7 +116,12 @@ func apiStore(t *testing.T, server *configMapServer) *state.Store {
 }
 
 func TestConfigMapBackendConvergence(t *testing.T) {
-	tombstone := state.Entry{UID: "other-uid", Created: time.Now().Add(-48 * time.Hour).UTC(), RepositoryID: "missing", NotBefore: time.Now().Add(-time.Hour).UTC()}
+	tombstone := state.Entry{
+		UID:          "other-uid",
+		Created:      time.Now().Add(-48 * time.Hour).UTC(),
+		RepositoryID: "missing",
+		NotBefore:    time.Now().Add(-time.Hour).UTC(),
+	}
 	other, _ := state.Encode(state.Ledger{"old/old/repo1": tombstone})
 	for name, tc := range map[string]struct {
 		server     *configMapServer
@@ -149,7 +167,15 @@ func TestConfigMapBackendConvergence(t *testing.T) {
 					return http.StatusConflict
 				}
 			}
-			r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, apiStore(t, s), false, discard))
+			r := harness(
+				New(
+					testConfig(),
+					&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+					apiStore(t, s),
+					false,
+					discard,
+				),
+			)
 			r.Refresh(t.Context(), "pgbackrest")
 			_, e := lookup(t, r, "db/db/repo1", time.Now())
 			if e.Results["state"] != tc.wantState || s.puts != tc.wantPuts {
@@ -179,9 +205,23 @@ func TestConfigMapBackendRejectsInvalidDocuments(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := &configMapServer{data: data, version: 1}
-			r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, apiStore(t, s), false, discard))
+			r := harness(
+				New(
+					testConfig(),
+					&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+					apiStore(t, s),
+					false,
+					discard,
+				),
+			)
 			r.Refresh(t.Context(), "pgbackrest")
-			if _, e := lookup(t, r, "db/db/repo1", time.Now()); e.Results["state"] != "invalid" || s.puts != 0 || s.data != data {
+			if _, e := lookup(
+				t,
+				r,
+				"db/db/repo1",
+				time.Now(),
+			); e.Results["state"] != "invalid" || s.puts != 0 ||
+				s.data != data {
 				t.Fatal(e.Results, s.puts)
 			}
 		})

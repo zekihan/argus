@@ -5,20 +5,23 @@ import (
 	"sort"
 	"time"
 
+	"github.com/zekihan/go-commons/metrics"
+
 	"github.com/zekihan/argus/internal/config"
 	"github.com/zekihan/argus/internal/result"
-	"github.com/zekihan/go-commons/metrics"
 )
 
 const (
 	Route = "pbs/backups"
-	// lastBackup is one series per backup group. A group that disappears keeps
+	// LastBackup is one series per backup group. A group that disappears keeps
 	// its last sample until the process restarts, so a removed backup stays
 	// armed. Excluded groups are never recorded.
 	lastBackup = "argus_pbs_last_backup_timestamp_seconds"
 )
 
-var dimensions = []string{"freshness"}
+const dimensionFreshness = "freshness"
+
+var dimensions = []string{dimensionFreshness}
 
 // Reader lists backup groups.
 type Reader interface {
@@ -32,7 +35,7 @@ type Check struct {
 	reg    *metrics.Registry
 }
 
-// New returns a PBS backup check. reg may be nil when metrics are disabled.
+// New returns a PBS backup check. Reg may be nil when metrics are disabled.
 func New(c config.PBS, api Reader, reg *metrics.Registry) *Check {
 	return &Check{config: c, api: api, reg: reg}
 }
@@ -97,48 +100,71 @@ func (c *Check) Evaluate(groups []Group, now time.Time) []result.Collection {
 		ordered = append(ordered, key)
 	}
 	sort.Strings(ordered)
-	collection := result.Collection{Route: Route, Check: Route, Dimensions: dimensions,
-		Results: map[string]string{"inventory": result.Inventory(missing, unexpected)}}
+	collection := result.Collection{
+		Route: Route, Check: Route, Dimensions: dimensions,
+		Results: map[string]string{"inventory": result.Inventory(missing, unexpected)},
+	}
 	for _, key := range ordered {
 		group, ok := seen[key]
-		item := result.Item{Target: key, Values: map[string]any{}}
-		switch {
-		case !ok:
-			item.Results = map[string]string{"freshness": result.Reason("missing")}
-		case group.Store == "" && group.Type == "" && group.ID == "":
-			item.Results = map[string]string{"freshness": result.Reason("ambiguous")}
-		default:
-			maximum, single := c.config.MaxAge(key)
-			if !single {
-				item.Results = map[string]string{"freshness": result.Reason("ambiguous")}
-			} else {
-				item.Results, item.Values = freshness(group, now, time.Duration(maximum)*time.Second)
-			}
-			c.observe(group)
-		}
-		collection.Items = append(collection.Items, item)
+		collection.Items = append(collection.Items, c.itemFreshness(key, group, ok, now))
 	}
 	return []result.Collection{collection}
 }
 
-func freshness(group Group, now time.Time, maximum time.Duration) (map[string]string, map[string]any) {
+// itemFreshness evaluates one ordered key's freshness dimension.
+func (c *Check) itemFreshness(key string, group Group, ok bool, now time.Time) result.Item {
+	item := result.Item{Target: key, Values: map[string]any{}}
+	switch {
+	case !ok:
+		item.Results = map[string]string{dimensionFreshness: result.Reason("missing")}
+	case group.Store == "" && group.Type == "" && group.ID == "":
+		item.Results = map[string]string{dimensionFreshness: result.Reason("ambiguous")}
+	default:
+		maximum, single := c.config.MaxAge(key)
+		if !single {
+			item.Results = map[string]string{dimensionFreshness: result.Reason("ambiguous")}
+		} else {
+			item.Results, item.Values = freshness(
+				group,
+				now,
+				time.Duration(maximum)*time.Second,
+			)
+		}
+		c.observe(group)
+	}
+	return item
+}
+
+func freshness(
+	group Group,
+	now time.Time,
+	maximum time.Duration,
+) (map[string]string, map[string]any) {
 	values := map[string]any{}
 	if config.PBSName(group.Guest) {
 		values["guest"] = group.Guest
 	}
 	if !group.HasLast {
-		return map[string]string{"freshness": result.Reason("no_backup")}, values
+		return map[string]string{dimensionFreshness: result.Reason("no_backup")}, values
 	}
 	age := now.Sub(group.Last)
 	values["lastBackupAt"] = group.Last.UTC().Format(time.RFC3339)
 	values["lastBackupAgeSeconds"] = age.Seconds()
 	switch {
 	case age < 0:
-		return map[string]string{"freshness": result.Reason("backup_in_future", result.Dur(age.Seconds()))}, values
+		return map[string]string{
+			dimensionFreshness: result.Reason("backup_in_future", result.Dur(age.Seconds())),
+		}, values
 	case age > maximum:
-		return map[string]string{"freshness": result.Reason("backup_stale", result.Labeled("last", result.Dur(age.Seconds())), result.Labeled("max", result.Dur(maximum.Seconds())))}, values
+		return map[string]string{
+			dimensionFreshness: result.Reason(
+				"backup_stale",
+				result.Labeled("last", result.Dur(age.Seconds())),
+				result.Labeled("max", result.Dur(maximum.Seconds())),
+			),
+		}, values
 	default:
-		return map[string]string{"freshness": result.OK}, values
+		return map[string]string{dimensionFreshness: result.OK}, values
 	}
 }
 

@@ -27,13 +27,15 @@ func TestAPICollectFailsClosed(t *testing.T) {
 		{"malformed", http.StatusOK, `{"items":`, kube.CodeInvalid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications" {
-					t.Errorf("path = %s", r.URL.Path)
-				}
-				w.WriteHeader(tc.code)
-				_, _ = io.WriteString(w, tc.body)
-			}))
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications" {
+						t.Errorf("path = %s", r.URL.Path)
+					}
+					w.WriteHeader(tc.code)
+					_, _ = io.WriteString(w, tc.body)
+				}),
+			)
 			defer server.Close()
 			client, err := kube.New(server.URL, "", "", "test", time.Second)
 			if err != nil {
@@ -51,25 +53,33 @@ func TestAPICollectFailsClosed(t *testing.T) {
 			h.NoLeak(t, secret)
 		})
 	}
-	h := checktest.New(New(cfg(), &fakeAPI{apps: []Application{app(t, "auto", true, "Synced", "Healthy", "", "Succeeded"), app(t, "manual", false, "Synced", "Healthy", "", "Succeeded")}}), now).Refresh(t)
+	h := checktest.New(New(cfg(), &fakeAPI{apps: []Application{app(t, "auto", true, "Synced", "Healthy", "", "Succeeded"), app(t, "manual", false, "Synced", "Healthy", "", "Succeeded")}}), now).
+		Refresh(t)
 	requireStale(t, h, Route)
 }
 
 func TestAPICollectReportsMissingExpectedApplication(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"name":"auto","uid":"u"},"status":{"sync":{"status":"Synced"},"health":{"status":"Healthy"}}}]}`)
+		_, _ = io.WriteString(
+			w,
+			`{"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"name":"auto","uid":"u"},"status":{"sync":{"status":"Synced"},"health":{"status":"Healthy"}}}]}`,
+		)
 	}))
 	defer server.Close()
 	client, err := kube.New(server.URL, "", "", "test", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	collections, err := New(cfg(), API{Client: client, Namespace: "argocd"}).Collect(t.Context(), func() time.Time { return now })
+	collections, err := New(
+		cfg(),
+		API{Client: client, Namespace: "argocd"},
+	).Collect(t.Context(), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	item, ok := collections[0].Find("manual")
-	if !ok || item.Results["sync"] != "missing" || item.Results["health"] != result.NA || collections[0].Results["inventory"] != "missing(1): manual" {
+	if !ok || item.Results["sync"] != "missing" || item.Results["health"] != result.NA ||
+		collections[0].Results["inventory"] != "missing(1): manual" {
 		t.Fatal(collections[0].Results, item)
 	}
 	if _, leaked := collections[0].Values["message"]; leaked {

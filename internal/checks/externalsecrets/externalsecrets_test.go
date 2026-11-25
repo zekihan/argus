@@ -14,7 +14,7 @@ import (
 )
 
 // Fixtures from platform/external-secrets/tests/test_sync_monitor.py.
-var now = time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
+var now = time.Date(2026, time.November, 6, 0, 0, 0, 0, time.UTC)
 
 const readyJSON = `{"metadata":{"name":"example","namespace":"apps","generation":2},"spec":{"refreshInterval":"1h"},
 "status":{"conditions":[{"type":"Ready","status":"True"}],"syncedResourceVersion":"2-12345","refreshTime":"2026-11-06T00:00:00+00:00"}}`
@@ -36,9 +36,15 @@ type fakeAPI struct {
 func (f *fakeAPI) Collect(context.Context) (Sample, error) { return f.sample, f.err }
 
 func healthy(t *testing.T) Sample {
-	return Sample{ExternalSecrets: []ExternalSecret{decode[ExternalSecret](t, readyJSON)},
-		ClusterExternalSecrets: []Object{decode[Object](t, readyJSON)}, SecretStores: []Object{decode[Object](t, readyJSON)},
-		ClusterSecretStores: []Object{decode[Object](t, readyJSON)}}
+	t.Helper()
+	return Sample{
+		ExternalSecrets: []ExternalSecret{decode[ExternalSecret](t, readyJSON)},
+		ClusterExternalSecrets: []Object{
+			decode[Object](t, readyJSON),
+		},
+		SecretStores:        []Object{decode[Object](t, readyJSON)},
+		ClusterSecretStores: []Object{decode[Object](t, readyJSON)},
+	}
 }
 
 func cfg() config.ExternalSecrets { return config.ExternalSecrets{RefreshGraceSeconds: 600} }
@@ -78,9 +84,12 @@ func TestStoresNotReady(t *testing.T) {
 
 func TestSecretSyncErrorNeverExposesProviderMessageOrSpec(t *testing.T) {
 	s := healthy(t)
-	s.ExternalSecrets[0] = decode[ExternalSecret](t, `{"metadata":{"name":"example","namespace":"apps","generation":2},
+	s.ExternalSecrets[0] = decode[ExternalSecret](
+		t,
+		`{"metadata":{"name":"example","namespace":"apps","generation":2},
 	"spec":{"refreshInterval":"1h","data":"sensitive-spec-value"},
-	"status":{"conditions":[{"type":"Ready","status":"False","reason":"SecretSyncedError","message":"sensitive-provider-message"}],"syncedResourceVersion":"2-12345","refreshTime":"2026-11-06T00:00:00+00:00"}}`)
+	"status":{"conditions":[{"type":"Ready","status":"False","reason":"SecretSyncedError","message":"sensitive-provider-message"}],"syncedResourceVersion":"2-12345","refreshTime":"2026-11-06T00:00:00+00:00"}}`,
+	)
 	ok, h := verdict(t, s)
 	_, e := h.Get(t, ExternalSecretsRoute+"/apps/example")
 	if ok || e.Results["ready"] != "not_ready" {
@@ -148,7 +157,13 @@ func TestRefreshIntervalUsesGoDuration(t *testing.T) {
 			h := checktest.New(New(cfg(), &fakeAPI{sample: s}), now).Refresh(t)
 			code, e := h.Get(t, ExternalSecretsRoute+"/apps/example")
 			if code != tc.wantCode || e.Results["refresh"] != tc.wantRefresh {
-				t.Fatalf("status = %d, refresh = %q, want %d, %q", code, e.Results["refresh"], tc.wantCode, tc.wantRefresh)
+				t.Fatalf(
+					"status = %d, refresh = %q, want %d, %q",
+					code,
+					e.Results["refresh"],
+					tc.wantCode,
+					tc.wantRefresh,
+				)
 			}
 		})
 	}
@@ -211,27 +226,41 @@ func TestFailedSampleCannotReuseHealthyState(t *testing.T) {
 
 func TestStoreReferenceAndInventory(t *testing.T) {
 	s := healthy(t)
-	s.ExternalSecrets[0].Spec.SecretStoreRef = &StoreRef{Name: "example", Kind: "ClusterSecretStore"}
+	s.ExternalSecrets[0].Spec.SecretStoreRef = &StoreRef{
+		Name: "example",
+		Kind: "ClusterSecretStore",
+	}
 	s.ClusterSecretStores[0].Status.Conditions[0].Status = "False"
 	c := cfg()
 	c.ExpectedExternalSecrets = []config.NamespacedName{{Namespace: "apps", Name: "gone"}}
 	c.ExpectedClusterSecretStores = []string{"example", "other"}
 	h := checktest.New(New(c, &fakeAPI{sample: s}), now).Refresh(t)
-	if _, e := h.Get(t, ExternalSecretsRoute+"/apps/example"); e.Results["store"] != "not_ready(ClusterSecretStore/example)" {
+	if _, e := h.Get(
+		t,
+		ExternalSecretsRoute+"/apps/example",
+	); e.Results["store"] != "not_ready(ClusterSecretStore/example)" {
 		t.Fatal(e.Results)
 	}
 	if _, e := h.Get(t, ExternalSecretsRoute); e.Results["inventory"] != "missing(1): apps/gone" {
 		t.Fatal(e.Results)
 	}
-	if code, e := h.Get(t, ClusterSecretStoresRoute+"/other"); code != 503 || e.Results["ready"] != "missing" {
+	if code, e := h.Get(
+		t,
+		ClusterSecretStoresRoute+"/other",
+	); code != 503 ||
+		e.Results["ready"] != "missing" {
 		t.Fatal(e)
 	}
 	s.ExternalSecrets[0].Spec.SecretStoreRef = &StoreRef{Name: "absent"}
 	h = checktest.New(New(cfg(), &fakeAPI{sample: s}), now).Refresh(t)
-	if _, e := h.Get(t, ExternalSecretsRoute+"/apps/example"); e.Results["store"] != "missing(SecretStore/absent)" {
+	if _, e := h.Get(
+		t,
+		ExternalSecretsRoute+"/apps/example",
+	); e.Results["store"] != "missing(SecretStore/absent)" {
 		t.Fatal(e.Results)
 	}
-	forbidden := checktest.New(New(cfg(), &fakeAPI{err: &kube.Error{Code: kube.CodeForbidden, Status: 403}}), now).Refresh(t)
+	forbidden := checktest.New(New(cfg(), &fakeAPI{err: &kube.Error{Code: kube.CodeForbidden, Status: 403}}), now).
+		Refresh(t)
 	if _, e := forbidden.Get(t, SecretStoresRoute); e.Results["collection"] != "forbidden" {
 		t.Fatal(e.Results)
 	}

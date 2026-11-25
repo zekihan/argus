@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -61,12 +62,14 @@ type Cluster struct {
 
 type PGBackRest struct {
 	Schedule
+
 	MaxAgeSeconds int       `json:"maxAgeSeconds,omitempty"`
 	Clusters      []Cluster `json:"clusters"`
 }
 
 type PVCs struct {
 	Schedule
+
 	StorageClasses     []string         `json:"storageClasses"`
 	ExpectedNodes      []string         `json:"expectedNodes"`
 	Expected           []NamespacedName `json:"expected,omitempty"`
@@ -77,11 +80,13 @@ type PVCs struct {
 
 type Postgres struct {
 	Schedule
+
 	Clusters []NamespacedName `json:"clusters"`
 }
 
 type Longhorn struct {
 	Schedule
+
 	Namespace                 string   `json:"namespace"`
 	ExpectedPVCs              []string `json:"expectedPVCs"`
 	BackupGroup               string   `json:"backupGroup,omitempty"`
@@ -102,11 +107,13 @@ func (c CronJob) Key() string { return c.Namespace + "/" + c.Name }
 
 type CronJobs struct {
 	Schedule
+
 	Items []CronJob `json:"items"`
 }
 
 type Certificates struct {
 	Schedule
+
 	Expected              []NamespacedName `json:"expected,omitempty"`
 	ExcludeIssuers        []string         `json:"excludeIssuers,omitempty"`
 	NotReadySeconds       int              `json:"notReadySeconds,omitempty"`
@@ -116,6 +123,7 @@ type Certificates struct {
 
 type PKI struct {
 	Schedule
+
 	RootNamespace        string           `json:"rootNamespace,omitempty"`
 	RootName             string           `json:"rootName,omitempty"`
 	IssuerName           string           `json:"issuerName,omitempty"`
@@ -129,6 +137,7 @@ type PKI struct {
 
 type ExternalSecrets struct {
 	Schedule
+
 	ExpectedExternalSecrets        []NamespacedName `json:"expectedExternalSecrets,omitempty"`
 	ExpectedClusterExternalSecrets []string         `json:"expectedClusterExternalSecrets,omitempty"`
 	ExpectedSecretStores           []NamespacedName `json:"expectedSecretStores,omitempty"`
@@ -138,6 +147,7 @@ type ExternalSecrets struct {
 
 type ArgoCD struct {
 	Schedule
+
 	Namespace                 string   `json:"namespace"`
 	Expected                  []string `json:"expected,omitempty"`
 	AutomatedOutOfSyncSeconds int      `json:"automatedOutOfSyncSeconds,omitempty"`
@@ -149,7 +159,7 @@ type ArgoCD struct {
 const defaultPBSMaxAgeSeconds = 26 * 3600
 
 // PBSMaxAgeOverride replaces maxAgeSeconds for backup groups whose key matches
-// Match. Match is store/type/id; * and ? apply inside one segment and do not
+// Match. Match is store/type/id; * and ? Apply inside one segment and do not
 // cross a slash. The first listed override is not special: overlapping matches
 // are rejected.
 type PBSMaxAgeOverride struct {
@@ -160,6 +170,7 @@ type PBSMaxAgeOverride struct {
 // PBS is the Proxmox Backup Server backup-group check.
 type PBS struct {
 	Schedule
+
 	URL             string              `json:"url"`
 	TokenFile       string              `json:"tokenFile"`
 	CAFile          string              `json:"caFile,omitempty"`
@@ -172,6 +183,7 @@ type PBS struct {
 
 type Nodes struct {
 	Schedule
+
 	Expected                    []string `json:"expected"`
 	PersistSeconds              int      `json:"persistSeconds,omitempty"`
 	Metrics                     *bool    `json:"metrics,omitempty"`
@@ -182,7 +194,7 @@ type Nodes struct {
 }
 
 // MetricsEnabled reports whether metrics.k8s.io usage is evaluated (default true).
-func (n Nodes) MetricsEnabled() bool { return n.Metrics == nil || *n.Metrics }
+func (n *Nodes) MetricsEnabled() bool { return n.Metrics == nil || *n.Metrics }
 
 type Host struct {
 	Name    string   `json:"name"`
@@ -192,6 +204,7 @@ type Host struct {
 
 type Hosts struct {
 	Schedule
+
 	User           string `json:"user,omitempty"`
 	PrivateKeyFile string `json:"privateKeyFile"`
 	KnownHostsFile string `json:"knownHostsFile"`
@@ -204,34 +217,45 @@ var hostLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
 
 type DoH struct {
 	Schedule
+
 	URL          string `json:"url"`
 	Name         string `json:"name"`
 	ExpectedIPv4 string `json:"expectedIPv4"`
 	DNSResolver  string `json:"dnsResolver,omitempty"`
 }
 
+// validHostName reports whether name is a valid DNS hostname.
+func validHostName(name string) bool {
+	name = strings.TrimSuffix(name, ".")
+	if len(name) == 0 || len(name) > 253 {
+		return false
+	}
+	for label := range strings.SplitSeq(name, ".") {
+		if len(label) > 63 || !hostLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
 func (d *DoH) validate() error {
 	u, err := url.Parse(d.URL)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("url must be an HTTPS URL without credentials, query or fragment")
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+		u.RawQuery != "" ||
+		u.Fragment != "" {
+		return errors.New("url must be an HTTPS URL without credentials, query or fragment")
 	}
 	if d.DNSResolver != "" {
 		host, port, err := net.SplitHostPort(d.DNSResolver)
 		if err != nil || net.ParseIP(host) == nil || port != "53" {
-			return fmt.Errorf("dnsResolver must be an IP address on port 53")
+			return errors.New("dnsResolver must be an IP address on port 53")
 		}
 	}
-	name := strings.TrimSuffix(d.Name, ".")
-	if len(name) == 0 || len(name) > 253 {
-		return fmt.Errorf("name must be a DNS hostname")
-	}
-	for _, label := range strings.Split(name, ".") {
-		if len(label) > 63 || !hostLabel.MatchString(label) {
-			return fmt.Errorf("name must be a DNS hostname")
-		}
+	if !validHostName(d.Name) {
+		return errors.New("name must be a DNS hostname")
 	}
 	if ip := net.ParseIP(d.ExpectedIPv4); ip == nil || ip.To4() == nil {
-		return fmt.Errorf("expectedIPv4 must be an IPv4 address")
+		return errors.New("expectedIPv4 must be an IPv4 address")
 	}
 	return nil
 }
@@ -267,9 +291,16 @@ type Config struct {
 }
 
 func Default() Config {
-	return Config{ListenAddress: ":8443", MetricsAddress: ":9090", TokenFile: "/var/run/argus-auth/token",
-		State:               State{Namespace: "argus", Name: "argus-state"},
-		PollIntervalSeconds: 60, MaxSampleAgeSeconds: 180, RequestTimeoutSeconds: 10, CollectionTimeoutSeconds: 45}
+	return Config{ //nolint:gosec // Path name only, no credential.
+		ListenAddress:            ":8443",
+		MetricsAddress:           ":9090",
+		TokenFile:                "/var/run/argus-auth/token",
+		State:                    State{Namespace: "argus", Name: "argus-state"},
+		PollIntervalSeconds:      60,
+		MaxSampleAgeSeconds:      180,
+		RequestTimeoutSeconds:    10,
+		CollectionTimeoutSeconds: 45,
+	}
 }
 
 // Load reads, strictly decodes, defaults and validates a configuration file.
@@ -282,7 +313,7 @@ func Load(path string) (Config, error) {
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, 1024*1024+1))
 	if err != nil || len(data) > 1024*1024 {
-		return c, fmt.Errorf("configuration exceeds read budget or cannot be read")
+		return c, errors.New("configuration exceeds read budget or cannot be read")
 	}
 	return Parse(data)
 }
@@ -294,7 +325,7 @@ func Parse(data []byte) (Config, error) {
 		return c, fmt.Errorf("invalid configuration JSON: %s", JSONProblem(err))
 	}
 	if !bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
-		return c, fmt.Errorf("configuration must be a JSON object")
+		return c, errors.New("configuration must be a JSON object")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
@@ -319,14 +350,7 @@ func (c *Config) ApplyDefaults() {
 		l.BackupGroup = "backup"
 	}
 	if j := k.CronJobs; j != nil {
-		for i := range j.Items {
-			if j.Items[i].MaxRunSeconds == 0 {
-				j.Items[i].MaxRunSeconds = 3600
-			}
-			if j.Items[i].MaxConsecutiveFailures == 0 {
-				j.Items[i].MaxConsecutiveFailures = 2
-			}
-		}
+		defaultCronJobItems(j)
 	}
 	if x := k.Certificates; x != nil {
 		x.NotReadySeconds = orDefault(x.NotReadySeconds, 3600)
@@ -348,19 +372,18 @@ func (c *Config) ApplyDefaults() {
 		a.ManualOutOfSyncSeconds = orDefault(a.ManualOutOfSyncSeconds, 7*24*3600)
 		a.ProgressingSeconds = orDefault(a.ProgressingSeconds, 900)
 	}
-	if n := k.Nodes; n != nil {
-		n.PersistSeconds = orDefault(n.PersistSeconds, 7200)
-		n.CPUPercent = orDefault(n.CPUPercent, 90)
-		n.MemoryPercent = orDefault(n.MemoryPercent, 90)
-		n.LonghornMinAvailablePercent = orDefault(n.LonghornMinAvailablePercent, 10)
-	}
-	if h := k.Hosts; h != nil {
-		h.User = orDefaultString(h.User, "argus")
-		h.TimeoutSeconds = orDefault(h.TimeoutSeconds, 30)
-		h.Concurrency = orDefault(h.Concurrency, 8)
-	}
-	if p := k.PBS; p != nil && p.MaxAgeSeconds == 0 {
-		p.MaxAgeSeconds = defaultPBSMaxAgeSeconds
+	c.applyDefaultsRest()
+}
+
+// defaultCronJobItems fills per-item CronJob defaults.
+func defaultCronJobItems(j *CronJobs) {
+	for i := range j.Items {
+		if j.Items[i].MaxRunSeconds == 0 {
+			j.Items[i].MaxRunSeconds = 3600
+		}
+		if j.Items[i].MaxConsecutiveFailures == 0 {
+			j.Items[i].MaxConsecutiveFailures = 2
+		}
 	}
 }
 
@@ -378,10 +401,14 @@ func orDefaultString(value, fallback string) string {
 	return value
 }
 
-var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-var dnsSubdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
-var repoName = regexp.MustCompile(`^repo[1-4]$`)
-var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	dnsLabel     = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	dnsSubdomain = regexp.MustCompile(
+		`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`,
+	)
+	repoName = regexp.MustCompile(`^repo[1-4]$`)
+	hex64    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
 
 // Name reports whether s is a Kubernetes DNS label (namespace and most object names).
 func Name(s string) bool { return len(s) <= 63 && dnsLabel.MatchString(s) }
@@ -393,73 +420,105 @@ func Object(s string) bool { return len(s) <= 253 && dnsSubdomain.MatchString(s)
 func Repo(s string) bool { return repoName.MatchString(s) }
 
 // HostDimensions are the probe fields a host may declare in expects.
-var HostDimensions = []string{"disk", "inodes", "memory", "swap", "load", "cpu_pressure", "uptime", "failed_units", "zfs", "time_sync", "ups"}
+var HostDimensions = []string{
+	"disk",
+	"inodes",
+	"memory",
+	"swap",
+	"load",
+	"cpu_pressure",
+	"uptime",
+	"failed_units",
+	"zfs",
+	"time_sync",
+	"ups",
+}
 
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
 	if !filepath.IsAbs(c.TokenFile) || filepath.Base(c.TokenFile) == "." {
-		return fmt.Errorf("tokenFile must be an absolute file path")
+		return errors.New("tokenFile must be an absolute file path")
 	}
-	_, port, err := net.SplitHostPort(c.ListenAddress)
-	if err != nil {
-		return fmt.Errorf("listenAddress must be host:port with a valid port")
-	}
-	portNumber, err := strconv.Atoi(port)
-	if err != nil || strings.Trim(port, "0123456789") != "" || portNumber < 1 || portNumber > 65535 {
-		return fmt.Errorf("listenAddress port must be between 1 and 65535")
+	if err := port("listenAddress", c.ListenAddress); err != nil {
+		return err
 	}
 	if c.MetricsAddress != "" {
-		if _, port, err := net.SplitHostPort(c.MetricsAddress); err != nil {
-			return fmt.Errorf("metricsAddress must be host:port with a valid port")
-		} else if portNumber, err := strconv.Atoi(port); err != nil || strings.Trim(port, "0123456789") != "" || portNumber < 1 || portNumber > 65535 {
-			return fmt.Errorf("metricsAddress port must be between 1 and 65535")
+		if err := port("metricsAddress", c.MetricsAddress); err != nil {
+			return err
 		}
 	}
 	if c.TLS != nil && (!absFile(c.TLS.CertFile) || !absFile(c.TLS.KeyFile)) {
-		return fmt.Errorf("tls.certFile and tls.keyFile must be absolute file paths")
+		return errors.New("tls.certFile and tls.keyFile must be absolute file paths")
 	}
 	if !Name(c.State.Namespace) || !Object(c.State.Name) {
-		return fmt.Errorf("state must name a ConfigMap namespace and name")
+		return errors.New("state must name a ConfigMap namespace and name")
 	}
-	if err := timing("", c.PollIntervalSeconds, c.CollectionTimeoutSeconds, c.MaxSampleAgeSeconds, c.RequestTimeoutSeconds); err != nil {
+	if err := timing(
+		"",
+		c.PollIntervalSeconds,
+		c.CollectionTimeoutSeconds,
+		c.MaxSampleAgeSeconds,
+		c.RequestTimeoutSeconds,
+	); err != nil {
 		return err
 	}
-	for _, check := range c.Enabled() {
-		interval, timeout, maxAge := c.Timing(check.Schedule)
-		if err := timing(check.Name+".", interval, timeout, maxAge, c.RequestTimeoutSeconds); err != nil {
-			return err
-		}
-		if err := check.validate(); err != nil {
-			return fmt.Errorf("checks.%s: %w", check.Name, err)
-		}
-		if h := c.Checks.Hosts; check.Name == "hosts" {
-			// Hosts are probed in batches of concurrency, each bounded by
-			// timeoutSeconds; every batch must fit the collection timeout, or
-			// healthy hosts late in the queue would report timeouts.
-			batches := (len(h.Hosts) + h.Concurrency - 1) / h.Concurrency
-			if batches*h.TimeoutSeconds > timeout {
-				return fmt.Errorf("checks.hosts: %d batches of %d hosts at timeoutSeconds %d exceed collectionTimeoutSeconds %d", batches, h.Concurrency, h.TimeoutSeconds, timeout)
-			}
-		}
+	return c.validateChecks()
+}
+
+// port validates a host:port address with a port between 1 and 65535.
+func port(name, addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s must be host:port with a valid port", name)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || strings.Trim(port, "0123456789") != "" || portNumber < 1 ||
+		portNumber > 65535 {
+		return fmt.Errorf("%s port must be between 1 and 65535", name)
+	}
+	return nil
+}
+
+// validateHosts checks batch timing for the hosts check.
+func validateHosts(h *Hosts, timeout int) error {
+	// Hosts are probed in batches of concurrency, each bounded by
+	// timeoutSeconds; every batch must fit the collection timeout, or
+	// healthy hosts late in the queue would report timeouts.
+	batches := (len(h.Hosts) + h.Concurrency - 1) / h.Concurrency
+	if batches*h.TimeoutSeconds > timeout {
+		return fmt.Errorf(
+			"checks.hosts: %d batches of %d hosts at timeoutSeconds %d exceed collectionTimeoutSeconds %d",
+			batches,
+			h.Concurrency,
+			h.TimeoutSeconds,
+			timeout,
+		)
 	}
 	return nil
 }
 
 func timing(prefix string, interval, timeout, maxAge, request int) error {
-	for name, value := range map[string]int{"pollIntervalSeconds": interval, "maxSampleAgeSeconds": maxAge,
-		"requestTimeoutSeconds": request, "collectionTimeoutSeconds": timeout} {
+	for name, value := range map[string]int{
+		"pollIntervalSeconds": interval, "maxSampleAgeSeconds": maxAge,
+		"requestTimeoutSeconds": request, "collectionTimeoutSeconds": timeout,
+	} {
 		if value < 1 || value > maxSeconds {
 			return fmt.Errorf("%s%s must be between 1 and 31622400", prefix, name)
 		}
 	}
 	if request > timeout || interval+2*timeout >= maxAge {
-		return fmt.Errorf("%srequest timeout must fit collection timeout; poll interval plus two collection timeouts must be shorter than sample lifetime", prefix)
+		return fmt.Errorf(
+			"%srequest timeout must fit collection timeout; poll interval plus two collection timeouts must be shorter than sample lifetime",
+			prefix,
+		)
 	}
 	return nil
 }
 
 // Timing resolves a check's effective interval, collection timeout and maximum sample age.
-func (c Config) Timing(s Schedule) (interval, timeout, maxAge int) {
-	interval, timeout, maxAge = c.PollIntervalSeconds, c.CollectionTimeoutSeconds, c.MaxSampleAgeSeconds
+func (c *Config) Timing(s Schedule) (int, int, int) {
+	interval := c.PollIntervalSeconds
+	timeout := c.CollectionTimeoutSeconds
+	maxAge := c.MaxSampleAgeSeconds
 	if s.IntervalSeconds != 0 {
 		interval = s.IntervalSeconds
 	}
@@ -480,7 +539,7 @@ type EnabledCheck struct {
 }
 
 // Enabled lists the configured checks in a stable order.
-func (c Config) Enabled() []EnabledCheck {
+func (c *Config) Enabled() []EnabledCheck {
 	k := c.Checks
 	var out []EnabledCheck
 	add := func(present bool, name string, s func() Schedule, v func() error) {
@@ -488,20 +547,129 @@ func (c Config) Enabled() []EnabledCheck {
 			out = append(out, EnabledCheck{Name: name, Schedule: s(), validate: v})
 		}
 	}
-	add(k.DoH != nil, "doh", func() Schedule { return k.DoH.Schedule }, func() error { return k.DoH.validate() })
-	add(k.PVCs != nil, "pvcs", func() Schedule { return k.PVCs.Schedule }, func() error { return k.PVCs.validate() })
-	add(k.Hosts != nil, "hosts", func() Schedule { return k.Hosts.Schedule }, func() error { return k.Hosts.validate() })
-	add(k.Nodes != nil, "nodes", func() Schedule { return k.Nodes.Schedule }, func() error { return k.Nodes.validate() })
-	add(k.Postgres != nil, "postgres", func() Schedule { return k.Postgres.Schedule }, func() error { return k.Postgres.validate() })
-	add(k.PGBackRest != nil, "pgbackrest", func() Schedule { return k.PGBackRest.Schedule }, func() error { return k.PGBackRest.validate() })
-	add(k.Longhorn != nil, "longhorn", func() Schedule { return k.Longhorn.Schedule }, func() error { return k.Longhorn.validate() })
-	add(k.CronJobs != nil, "cronjobs", func() Schedule { return k.CronJobs.Schedule }, func() error { return k.CronJobs.validate() })
-	add(k.Certificates != nil, "certificates", func() Schedule { return k.Certificates.Schedule }, func() error { return k.Certificates.validate() })
-	add(k.PKI != nil, "pki", func() Schedule { return k.PKI.Schedule }, func() error { return k.PKI.validate() })
-	add(k.ExternalSecrets != nil, "externalsecrets", func() Schedule { return k.ExternalSecrets.Schedule }, func() error { return k.ExternalSecrets.validate() })
-	add(k.ArgoCD != nil, "argocd", func() Schedule { return k.ArgoCD.Schedule }, func() error { return k.ArgoCD.validate() })
-	add(k.PBS != nil, "pbs", func() Schedule { return k.PBS.Schedule }, func() error { return k.PBS.validate() })
+	add(
+		k.DoH != nil,
+		"doh",
+		func() Schedule { return k.DoH.Schedule },
+		func() error { return k.DoH.validate() },
+	)
+	add(
+		k.PVCs != nil,
+		"pvcs",
+		func() Schedule { return k.PVCs.Schedule },
+		func() error { return k.PVCs.validate() },
+	)
+	add(
+		k.Hosts != nil,
+		"hosts",
+		func() Schedule { return k.Hosts.Schedule },
+		func() error { return k.Hosts.validate() },
+	)
+	add(
+		k.Nodes != nil,
+		"nodes",
+		func() Schedule { return k.Nodes.Schedule },
+		func() error { return k.Nodes.validate() },
+	)
+	add(
+		k.Postgres != nil,
+		"postgres",
+		func() Schedule { return k.Postgres.Schedule },
+		func() error { return k.Postgres.validate() },
+	)
+	add(
+		k.PGBackRest != nil,
+		"pgbackrest",
+		func() Schedule { return k.PGBackRest.Schedule },
+		func() error { return k.PGBackRest.validate() },
+	)
+	add(
+		k.Longhorn != nil,
+		"longhorn",
+		func() Schedule { return k.Longhorn.Schedule },
+		func() error { return k.Longhorn.validate() },
+	)
+	add(
+		k.CronJobs != nil,
+		"cronjobs",
+		func() Schedule { return k.CronJobs.Schedule },
+		func() error { return k.CronJobs.validate() },
+	)
+	add(
+		k.Certificates != nil,
+		"certificates",
+		func() Schedule { return k.Certificates.Schedule },
+		func() error { return k.Certificates.validate() },
+	)
+	add(
+		k.PKI != nil,
+		"pki",
+		func() Schedule { return k.PKI.Schedule },
+		func() error { return k.PKI.validate() },
+	)
+	add(
+		k.ExternalSecrets != nil,
+		"externalsecrets",
+		func() Schedule { return k.ExternalSecrets.Schedule },
+		func() error { return k.ExternalSecrets.validate() },
+	)
+	add(
+		k.ArgoCD != nil,
+		"argocd",
+		func() Schedule { return k.ArgoCD.Schedule },
+		func() error { return k.ArgoCD.validate() },
+	)
+	add(
+		k.PBS != nil,
+		"pbs",
+		func() Schedule { return k.PBS.Schedule },
+		func() error { return k.PBS.validate() },
+	)
 	return out
+}
+
+// applyDefaultsRest fills the remaining check section defaults.
+func (c *Config) applyDefaultsRest() {
+	k := &c.Checks
+	if n := k.Nodes; n != nil {
+		n.PersistSeconds = orDefault(n.PersistSeconds, 7200)
+		n.CPUPercent = orDefault(n.CPUPercent, 90)
+		n.MemoryPercent = orDefault(n.MemoryPercent, 90)
+		n.LonghornMinAvailablePercent = orDefault(n.LonghornMinAvailablePercent, 10)
+	}
+	if h := k.Hosts; h != nil {
+		h.User = orDefaultString(h.User, "argus")
+		h.TimeoutSeconds = orDefault(h.TimeoutSeconds, 30)
+		h.Concurrency = orDefault(h.Concurrency, 8)
+	}
+	if p := k.PBS; p != nil && p.MaxAgeSeconds == 0 {
+		p.MaxAgeSeconds = defaultPBSMaxAgeSeconds
+	}
+}
+
+// validateChecks validates each enabled check's timing and configuration.
+func (c *Config) validateChecks() error {
+	for _, check := range c.Enabled() {
+		interval, timeout, maxAge := c.Timing(check.Schedule)
+		if err := timing(
+			check.Name+".",
+			interval,
+			timeout,
+			maxAge,
+			c.RequestTimeoutSeconds,
+		); err != nil {
+			return err
+		}
+		if err := check.validate(); err != nil {
+			return fmt.Errorf("checks.%s: %w", check.Name, err)
+		}
+		if check.Name == "hosts" {
+			if err := validateHosts(c.Checks.Hosts, timeout); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func absFile(path string) bool {
@@ -554,7 +722,7 @@ func (p *PGBackRest) validate() error {
 		return err
 	}
 	if len(p.Clusters) == 0 || len(p.Clusters) > 1000 {
-		return fmt.Errorf("clusters must contain an explicit inventory of 1 to 1000 clusters")
+		return errors.New("clusters must contain an explicit inventory of 1 to 1000 clusters")
 	}
 	seen := map[string]bool{}
 	for _, cluster := range p.Clusters {
@@ -574,7 +742,7 @@ func (p *PGBackRest) validate() error {
 
 func (p *Postgres) validate() error {
 	if len(p.Clusters) == 0 {
-		return fmt.Errorf("clusters must list an explicit inventory")
+		return errors.New("clusters must list an explicit inventory")
 	}
 	for _, cluster := range p.Clusters {
 		if !Name(cluster.Name) {
@@ -586,10 +754,10 @@ func (p *Postgres) validate() error {
 
 func (l *Longhorn) validate() error {
 	if !Name(l.Namespace) {
-		return fmt.Errorf("namespace must be the Longhorn namespace")
+		return errors.New("namespace must be the Longhorn namespace")
 	}
 	if !Name(l.BackupGroup) {
-		return fmt.Errorf("backupGroup must be a recurring job group name")
+		return errors.New("backupGroup must be a recurring job group name")
 	}
 	if err := uniqueNames("expectedPVCs", l.ExpectedPVCs, true, func(s string) bool {
 		namespace, name, ok := strings.Cut(s, "/")
@@ -607,7 +775,7 @@ func (l *Longhorn) validate() error {
 
 func (j *CronJobs) validate() error {
 	if len(j.Items) == 0 || len(j.Items) > 5000 {
-		return fmt.Errorf("items must list an explicit inventory of CronJobs")
+		return errors.New("items must list an explicit inventory of CronJobs")
 	}
 	seen := map[string]bool{}
 	for _, item := range j.Items {
@@ -641,17 +809,17 @@ func (x *Certificates) validate() error {
 		}
 	}
 	if x.ExpiryDays < 1 || x.ExpiryDays > 3650 {
-		return fmt.Errorf("expiryDays must be between 1 and 3650")
+		return errors.New("expiryDays must be between 1 and 3650")
 	}
 	return nil
 }
 
 func (p *PKI) validate() error {
 	if !Name(p.RootNamespace) || !Object(p.RootName) || !Object(p.IssuerName) {
-		return fmt.Errorf("rootNamespace, rootName and issuerName must be Kubernetes names")
+		return errors.New("rootNamespace, rootName and issuerName must be Kubernetes names")
 	}
 	if !hex64.MatchString(p.RootSHA256) || (p.RootSPKI != "" && !hex64.MatchString(p.RootSPKI)) {
-		return fmt.Errorf("rootSHA256 and rootSPKI must be lowercase hex SHA-256 digests")
+		return errors.New("rootSHA256 and rootSPKI must be lowercase hex SHA-256 digests")
 	}
 	if err := uniqueNamespaced("expectedCertificates", p.ExpectedCertificates, true); err != nil {
 		return err
@@ -660,22 +828,36 @@ func (p *PKI) validate() error {
 		return err
 	}
 	if p.LeafDays < 1 || p.LeafDays > 3650 || p.MarginDays < 1 || p.MarginDays > 3650 {
-		return fmt.Errorf("leafDays and marginDays must be between 1 and 3650")
+		return errors.New("leafDays and marginDays must be between 1 and 3650")
 	}
 	return nil
 }
 
 func (e *ExternalSecrets) validate() error {
-	if err := uniqueNamespaced("expectedExternalSecrets", e.ExpectedExternalSecrets, false); err != nil {
+	if err := uniqueNamespaced(
+		"expectedExternalSecrets",
+		e.ExpectedExternalSecrets,
+		false,
+	); err != nil {
 		return err
 	}
 	if err := uniqueNamespaced("expectedSecretStores", e.ExpectedSecretStores, false); err != nil {
 		return err
 	}
-	if err := uniqueNames("expectedClusterExternalSecrets", e.ExpectedClusterExternalSecrets, false, Object); err != nil {
+	if err := uniqueNames(
+		"expectedClusterExternalSecrets",
+		e.ExpectedClusterExternalSecrets,
+		false,
+		Object,
+	); err != nil {
 		return err
 	}
-	if err := uniqueNames("expectedClusterSecretStores", e.ExpectedClusterSecretStores, false, Object); err != nil {
+	if err := uniqueNames(
+		"expectedClusterSecretStores",
+		e.ExpectedClusterSecretStores,
+		false,
+		Object,
+	); err != nil {
 		return err
 	}
 	return seconds("refreshGraceSeconds", e.RefreshGraceSeconds, true)
@@ -683,13 +865,15 @@ func (e *ExternalSecrets) validate() error {
 
 func (a *ArgoCD) validate() error {
 	if !Name(a.Namespace) {
-		return fmt.Errorf("namespace must be the Argo CD namespace")
+		return errors.New("namespace must be the Argo CD namespace")
 	}
 	if err := uniqueNames("expected", a.Expected, false, Object); err != nil {
 		return err
 	}
-	for name, value := range map[string]int{"automatedOutOfSyncSeconds": a.AutomatedOutOfSyncSeconds,
-		"manualOutOfSyncSeconds": a.ManualOutOfSyncSeconds, "progressingSeconds": a.ProgressingSeconds} {
+	for name, value := range map[string]int{
+		"automatedOutOfSyncSeconds": a.AutomatedOutOfSyncSeconds,
+		"manualOutOfSyncSeconds":    a.ManualOutOfSyncSeconds, "progressingSeconds": a.ProgressingSeconds,
+	} {
 		if err := seconds(name, value, true); err != nil {
 			return err
 		}
@@ -702,7 +886,7 @@ func (n *Nodes) validate() error {
 		return err
 	}
 	if n.LonghornNamespace != "" && !Name(n.LonghornNamespace) {
-		return fmt.Errorf("longhornNamespace must be a namespace name")
+		return errors.New("longhornNamespace must be a namespace name")
 	}
 	for name, value := range map[string]int{"cpuPercent": n.CPUPercent, "memoryPercent": n.MemoryPercent, "longhornMinAvailablePercent": n.LonghornMinAvailablePercent} {
 		if value < 1 || value > 100 {
@@ -712,8 +896,10 @@ func (n *Nodes) validate() error {
 	return seconds("persistSeconds", n.PersistSeconds, true)
 }
 
-var hostName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-var pbsName = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,63})$`)
+var (
+	hostName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	pbsName  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,63})$`)
+)
 
 // PBSName reports whether s is one PBS datastore, backup type, backup id or comment segment.
 func PBSName(s string) bool { return pbsName.MatchString(s) }
@@ -731,72 +917,9 @@ func pbsGroup(s string) bool {
 	return true
 }
 
-func (p *PBS) validate() error {
-	u, err := url.Parse(p.URL)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return fmt.Errorf("url must be an HTTPS origin without credentials, query or fragment")
-	}
-	if !absFile(p.TokenFile) {
-		return fmt.Errorf("tokenFile must be an absolute file path")
-	}
-	if p.CAFile != "" && !absFile(p.CAFile) {
-		return fmt.Errorf("caFile must be an absolute file path")
-	}
-	if p.Fingerprint != "" && !sha256Fingerprint(p.Fingerprint) {
-		return fmt.Errorf("fingerprint must be a SHA-256 digest")
-	}
-	if p.CAFile == "" && p.Fingerprint == "" {
-		return fmt.Errorf("caFile or fingerprint must pin the PBS certificate")
-	}
-	if err := seconds("maxAgeSeconds", p.MaxAgeSeconds, true); err != nil {
-		return err
-	}
-	if err := p.validateMaxAgeOverrides(); err != nil {
-		return err
-	}
-	if err := uniqueNames("expected", p.Expected, false, pbsGroup); err != nil {
-		return err
-	}
-	if err := uniqueNames("exclude", p.Exclude, false, pbsGroup); err != nil {
-		return err
-	}
-	skip := map[string]bool{}
-	for _, key := range p.Exclude {
-		skip[key] = true
-	}
-	for _, key := range p.Expected {
-		if skip[key] {
-			return fmt.Errorf("expected and exclude both contain %s", key)
-		}
-	}
-	return nil
-}
-
-func (p *PBS) validateMaxAgeOverrides() error {
-	if len(p.MaxAgeOverrides) > 5000 {
-		return fmt.Errorf("maxAgeOverrides exceeds 5000 entries")
-	}
-	seen := map[string]bool{}
-	for i, override := range p.MaxAgeOverrides {
-		if !pbsGlob(override.Match) || seen[override.Match] {
-			return fmt.Errorf("invalid or duplicate maxAgeOverrides match: %s", override.Match)
-		}
-		seen[override.Match] = true
-		if err := seconds(fmt.Sprintf("maxAgeOverrides[%d].maxAgeSeconds", i), override.MaxAgeSeconds, true); err != nil {
-			return err
-		}
-		for _, earlier := range p.MaxAgeOverrides[:i] {
-			if pbsGlobsOverlap(earlier.Match, override.Match) {
-				return fmt.Errorf("maxAgeOverrides match %s overlaps %s", earlier.Match, override.Match)
-			}
-		}
-	}
-	return nil
-}
-
 // MaxAge returns the freshness limit for a backup group key. The second result
 // is false when more than one override matches.
-func (p PBS) MaxAge(group string) (int, bool) {
+func (p *PBS) MaxAge(group string) (int, bool) {
 	matched := 0
 	seconds := p.MaxAgeSeconds
 	for _, override := range p.MaxAgeOverrides {
@@ -811,6 +934,86 @@ func (p PBS) MaxAge(group string) (int, bool) {
 		return 0, false
 	}
 	return seconds, true
+}
+
+func origin(u *url.URL, err error) bool {
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil &&
+		u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/")
+}
+
+func (p *PBS) validate() error {
+	if u, err := url.Parse(p.URL); !origin(u, err) {
+		return errors.New("url must be an HTTPS origin without credentials, query or fragment")
+	}
+	if !absFile(p.TokenFile) {
+		return errors.New("tokenFile must be an absolute file path")
+	}
+	if p.CAFile != "" && !absFile(p.CAFile) {
+		return errors.New("caFile must be an absolute file path")
+	}
+	if p.Fingerprint != "" && !sha256Fingerprint(p.Fingerprint) {
+		return errors.New("fingerprint must be a SHA-256 digest")
+	}
+	if p.CAFile == "" && p.Fingerprint == "" {
+		return errors.New("caFile or fingerprint must pin the PBS certificate")
+	}
+	if err := seconds("maxAgeSeconds", p.MaxAgeSeconds, true); err != nil {
+		return err
+	}
+	if err := p.validateMaxAgeOverrides(); err != nil {
+		return err
+	}
+	if err := uniqueNames("expected", p.Expected, false, pbsGroup); err != nil {
+		return err
+	}
+	if err := uniqueNames("exclude", p.Exclude, false, pbsGroup); err != nil {
+		return err
+	}
+	return p.validateInventory()
+}
+
+// validateInventory rejects expected keys that are also excluded.
+func (p *PBS) validateInventory() error {
+	skip := map[string]bool{}
+	for _, key := range p.Exclude {
+		skip[key] = true
+	}
+	for _, key := range p.Expected {
+		if skip[key] {
+			return fmt.Errorf("expected and exclude both contain %s", key)
+		}
+	}
+	return nil
+}
+
+func (p *PBS) validateMaxAgeOverrides() error {
+	if len(p.MaxAgeOverrides) > 5000 {
+		return errors.New("maxAgeOverrides exceeds 5000 entries")
+	}
+	seen := map[string]bool{}
+	for i, override := range p.MaxAgeOverrides {
+		if !pbsGlob(override.Match) || seen[override.Match] {
+			return fmt.Errorf("invalid or duplicate maxAgeOverrides match: %s", override.Match)
+		}
+		seen[override.Match] = true
+		if err := seconds(
+			fmt.Sprintf("maxAgeOverrides[%d].maxAgeSeconds", i),
+			override.MaxAgeSeconds,
+			true,
+		); err != nil {
+			return err
+		}
+		for _, earlier := range p.MaxAgeOverrides[:i] {
+			if pbsGlobsOverlap(earlier.Match, override.Match) {
+				return fmt.Errorf(
+					"maxAgeOverrides match %s overlaps %s",
+					earlier.Match,
+					override.Match,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 var pbsGlobSegment = regexp.MustCompile(`^[A-Za-z0-9_.*?-]+$`)
@@ -845,7 +1048,124 @@ func pbsGlobsOverlap(a, b string) bool {
 	return true
 }
 
-// segmentGlobsOverlap reports whether two single-segment globs (* and ?) match
+// globNFA is the NFA for one single-segment glob (* and ? Are operators).
+type globNFA struct {
+	eps    [][]int
+	trans  [][][]int
+	accept int
+}
+
+// buildGlobNFA constructs the NFA for pattern over symbols classes.
+func buildGlobNFA(pattern string, symbols int, symbol func(byte) int) globNFA {
+	n := len(pattern) + 1
+	m := globNFA{eps: make([][]int, n), trans: make([][][]int, n), accept: len(pattern)}
+	for i := range m.trans {
+		m.trans[i] = make([][]int, symbols)
+	}
+	for i := range len(pattern) {
+		switch pattern[i] {
+		case '*':
+			m.eps[i] = append(m.eps[i], i+1)
+			for s := range symbols {
+				m.trans[i][s] = append(m.trans[i][s], i)
+			}
+		case '?':
+			for s := range symbols {
+				m.trans[i][s] = append(m.trans[i][s], i+1)
+			}
+		default:
+			s := symbol(pattern[i])
+			m.trans[i][s] = append(m.trans[i][s], i+1)
+		}
+	}
+	return m
+}
+
+type globPair struct{ i, j int }
+
+// epsClosure lists the states eps-reachable from start on one NFA side.
+func epsClosure(m globNFA, up globPair, side int) []globPair {
+	moved := func(cur globPair) ([]globPair, int) {
+		var indices []int
+		if side == 0 {
+			indices = m.eps[cur.i]
+		} else {
+			indices = m.eps[cur.j]
+		}
+		next := make([]globPair, 0, len(indices))
+		for _, j := range indices {
+			if side == 0 {
+				next = append(next, globPair{j, cur.j})
+			} else {
+				next = append(next, globPair{cur.i, j})
+			}
+		}
+		return next, len(next)
+	}
+	seen := map[globPair]bool{up: true}
+	queue := []globPair{up}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		next, _ := moved(cur)
+		for _, item := range next {
+			if !seen[item] {
+				seen[item] = true
+				queue = append(queue, item)
+			}
+		}
+	}
+	out := make([]globPair, 0, len(seen))
+	for item := range seen {
+		out = append(out, item)
+	}
+	return out
+}
+
+// overlaps reports whether the product of left and right accepts.
+func overlaps(left, right globNFA, symbols int) bool {
+	seen := map[globPair]bool{}
+	var queue []globPair
+	push := func(items []globPair) {
+		for _, item := range items {
+			if !seen[item] {
+				seen[item] = true
+				queue = append(queue, item)
+			}
+		}
+	}
+	closure := func(start globPair) []globPair {
+		leftMoved := epsClosure(left, start, 0)
+		rightMoved := epsClosure(right, start, 1)
+		out := make([]globPair, 0, len(leftMoved)*len(rightMoved))
+		for _, leftMoved := range leftMoved {
+			for _, rightMoved := range rightMoved {
+				out = append(out, globPair{leftMoved.i, rightMoved.j})
+			}
+		}
+		return out
+	}
+	push(closure(globPair{}))
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.i == left.accept && cur.j == right.accept {
+			return true
+		}
+		for s := range symbols {
+			var moved []globPair
+			for _, i := range left.trans[cur.i][s] {
+				for _, j := range right.trans[cur.j][s] {
+					moved = append(moved, closure(globPair{i, j})...)
+				}
+			}
+			push(moved)
+		}
+	}
+	return false
+}
+
+// segmentGlobsOverlap reports whether two single-segment globs (* and ?) Match
 // a common string. The product of their NFAs accepts when they do.
 func segmentGlobsOverlap(a, b string) bool {
 	literals := map[byte]int{}
@@ -867,92 +1187,7 @@ func segmentGlobsOverlap(a, b string) bool {
 		}
 		return other
 	}
-	type machine struct {
-		eps    [][]int
-		trans  [][][]int
-		accept int
-	}
-	build := func(pattern string) machine {
-		n := len(pattern) + 1
-		m := machine{eps: make([][]int, n), trans: make([][][]int, n), accept: len(pattern)}
-		for i := range m.trans {
-			m.trans[i] = make([][]int, symbols)
-		}
-		for i := range len(pattern) {
-			switch pattern[i] {
-			case '*':
-				m.eps[i] = append(m.eps[i], i+1)
-				for s := range symbols {
-					m.trans[i][s] = append(m.trans[i][s], i)
-				}
-			case '?':
-				for s := range symbols {
-					m.trans[i][s] = append(m.trans[i][s], i+1)
-				}
-			default:
-				s := symbol(pattern[i])
-				m.trans[i][s] = append(m.trans[i][s], i+1)
-			}
-		}
-		return m
-	}
-	left, right := build(a), build(b)
-	type pair struct{ i, j int }
-	close := func(start pair) []pair {
-		seen := map[pair]bool{start: true}
-		queue := []pair{start}
-		for len(queue) > 0 {
-			cur := queue[0]
-			queue = queue[1:]
-			for _, i := range left.eps[cur.i] {
-				next := pair{i, cur.j}
-				if !seen[next] {
-					seen[next] = true
-					queue = append(queue, next)
-				}
-			}
-			for _, j := range right.eps[cur.j] {
-				next := pair{cur.i, j}
-				if !seen[next] {
-					seen[next] = true
-					queue = append(queue, next)
-				}
-			}
-		}
-		out := make([]pair, 0, len(seen))
-		for item := range seen {
-			out = append(out, item)
-		}
-		return out
-	}
-	seen := map[pair]bool{}
-	var queue []pair
-	push := func(items []pair) {
-		for _, item := range items {
-			if !seen[item] {
-				seen[item] = true
-				queue = append(queue, item)
-			}
-		}
-	}
-	push(close(pair{}))
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		if cur.i == left.accept && cur.j == right.accept {
-			return true
-		}
-		for s := range symbols {
-			var moved []pair
-			for _, i := range left.trans[cur.i][s] {
-				for _, j := range right.trans[cur.j][s] {
-					moved = append(moved, close(pair{i, j})...)
-				}
-			}
-			push(moved)
-		}
-	}
-	return false
+	return overlaps(buildGlobNFA(a, symbols, symbol), buildGlobNFA(b, symbols, symbol), symbols)
 }
 
 func sha256Fingerprint(s string) bool {
@@ -966,36 +1201,39 @@ func sha256Fingerprint(s string) bool {
 
 func (h *Hosts) validate() error {
 	if !Name(h.User) {
-		return fmt.Errorf("user must be a simple login name")
+		return errors.New("user must be a simple login name")
 	}
 	if !absFile(h.PrivateKeyFile) || !absFile(h.KnownHostsFile) {
-		return fmt.Errorf("privateKeyFile and knownHostsFile must be absolute file paths")
+		return errors.New("privateKeyFile and knownHostsFile must be absolute file paths")
 	}
 	if h.TimeoutSeconds < 1 || h.TimeoutSeconds > 600 || h.Concurrency < 1 || h.Concurrency > 64 {
-		return fmt.Errorf("timeoutSeconds must be 1-600 and concurrency 1-64")
+		return errors.New("timeoutSeconds must be 1-600 and concurrency 1-64")
 	}
 	if len(h.Hosts) == 0 || len(h.Hosts) > 500 {
-		return fmt.Errorf("hosts must list an explicit inventory of 1 to 500 hosts")
+		return errors.New("hosts must list an explicit inventory of 1 to 500 hosts")
 	}
 	seen := map[string]bool{}
 	for _, host := range h.Hosts {
-		if len(host.Name) > 63 || !hostName.MatchString(host.Name) || seen[host.Name] {
-			return fmt.Errorf("invalid or duplicate host name: %s", host.Name)
+		if err := validateHost(host, seen); err != nil {
+			return err
 		}
 		seen[host.Name] = true
-		if _, err := HostAddress(host.Address); err != nil {
-			return fmt.Errorf("host %s: %w", host.Name, err)
-		}
-		if err := uniqueNames("expects", host.Expects, false, func(s string) bool {
-			for _, d := range HostDimensions {
-				if d == s {
-					return true
-				}
-			}
-			return false
-		}); err != nil {
-			return fmt.Errorf("host %s: %w", host.Name, err)
-		}
+	}
+	return nil
+}
+
+// validateHost checks one host's name, address and expects.
+func validateHost(host Host, seen map[string]bool) error {
+	if len(host.Name) > 63 || !hostName.MatchString(host.Name) || seen[host.Name] {
+		return fmt.Errorf("invalid or duplicate host name: %s", host.Name)
+	}
+	if _, err := HostAddress(host.Address); err != nil {
+		return fmt.Errorf("host %s: %w", host.Name, err)
+	}
+	if err := uniqueNames("expects", host.Expects, false, func(s string) bool {
+		return slices.Contains(HostDimensions, s)
+	}); err != nil {
+		return fmt.Errorf("host %s: %w", host.Name, err)
 	}
 	return nil
 }
@@ -1008,10 +1246,10 @@ func HostAddress(address string) (string, error) {
 	}
 	number, err := strconv.Atoi(port)
 	if err != nil || number < 1 || number > 65535 || strings.Trim(port, "0123456789") != "" {
-		return "", fmt.Errorf("address port must be between 1 and 65535")
+		return "", errors.New("address port must be between 1 and 65535")
 	}
 	if net.ParseIP(host) == nil && (len(host) > 253 || !dnsSubdomain.MatchString(host)) {
-		return "", fmt.Errorf("address must be an IP address or DNS name")
+		return "", errors.New("address must be an IP address or DNS name")
 	}
 	return net.JoinHostPort(host, port), nil
 }
@@ -1037,7 +1275,10 @@ func JSONProblem(err error) string {
 	var syntaxErr *json.SyntaxError
 	switch {
 	case errors.As(err, &typeErr):
-		return fmt.Sprintf("field %q has the wrong type", strings.Trim(nameUnsafe.ReplaceAllString(typeErr.Field, "_"), "_"))
+		return fmt.Sprintf(
+			"field %q has the wrong type",
+			strings.Trim(nameUnsafe.ReplaceAllString(typeErr.Field, "_"), "_"),
+		)
 	case errors.As(err, &syntaxErr):
 		return fmt.Sprintf("syntax error at byte %d", syntaxErr.Offset)
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
@@ -1046,7 +1287,8 @@ func JSONProblem(err error) string {
 	if match := unknownField.FindStringSubmatch(err.Error()); match != nil {
 		return fmt.Sprintf("unknown field %q", match[1])
 	}
-	if strings.HasPrefix(err.Error(), "duplicate") || strings.HasPrefix(err.Error(), "trailing") || strings.HasPrefix(err.Error(), "unexpected delimiter") {
+	if strings.HasPrefix(err.Error(), "duplicate") || strings.HasPrefix(err.Error(), "trailing") ||
+		strings.HasPrefix(err.Error(), "unexpected delimiter") {
 		return err.Error()
 	}
 	return "invalid JSON"
@@ -1056,6 +1298,39 @@ var nameUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.]`)
 
 // UniqueJSON rejects case-insensitive duplicate keys and trailing JSON documents.
 // Key comparison matches encoding/json's case-insensitive struct field matching.
+// WalkObject consumes one JSON object, rejecting duplicate keys.
+func walkObject(d *json.Decoder, walk func() error) error {
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := key.(string)
+		name = foldKey(name)
+		if !ok || seen[name] {
+			return errors.New("duplicate or invalid object key")
+		}
+		seen[name] = true
+		if err := walk(); err != nil {
+			return err
+		}
+	}
+	_, err := d.Token()
+	return err
+}
+
+// walkArray consumes one JSON array.
+func walkArray(d *json.Decoder, walk func() error) error {
+	for d.More() {
+		if err := walk(); err != nil {
+			return err
+		}
+	}
+	_, err := d.Token()
+	return err
+}
+
 func UniqueJSON(data []byte) error {
 	d := json.NewDecoder(bytes.NewReader(data))
 	var walk func() error
@@ -1067,33 +1342,12 @@ func UniqueJSON(data []byte) error {
 		if delim, ok := t.(json.Delim); ok {
 			switch delim {
 			case '{':
-				seen := map[string]bool{}
-				for d.More() {
-					key, err := d.Token()
-					if err != nil {
-						return err
-					}
-					name, ok := key.(string)
-					name = foldKey(name)
-					if !ok || seen[name] {
-						return fmt.Errorf("duplicate or invalid object key")
-					}
-					seen[name] = true
-					if err := walk(); err != nil {
-						return err
-					}
-				}
+				return walkObject(d, walk)
 			case '[':
-				for d.More() {
-					if err := walk(); err != nil {
-						return err
-					}
-				}
+				return walkArray(d, walk)
 			default:
-				return fmt.Errorf("unexpected delimiter")
+				return errors.New("unexpected delimiter")
 			}
-			_, err = d.Token()
-			return err
 		}
 		return nil
 	}
@@ -1101,7 +1355,7 @@ func UniqueJSON(data []byte) error {
 		return err
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return fmt.Errorf("trailing JSON content")
+		return errors.New("trailing JSON content")
 	}
 	return nil
 }
@@ -1134,7 +1388,7 @@ func (p *PVCs) validate() error {
 		return err
 	}
 	if p.UsedPercent < 1 || p.UsedPercent > 100 {
-		return fmt.Errorf("usedPercent must be between 1 and 100")
+		return errors.New("usedPercent must be between 1 and 100")
 	}
 	return seconds("maxStatsAgeSeconds", p.MaxStatsAgeSeconds, true)
 }

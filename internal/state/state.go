@@ -11,8 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"maps"
 	"os"
 	"time"
 
@@ -66,20 +66,56 @@ func Decode(data []byte) (Ledger, error) {
 	var doc document
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
-	if d.Decode(&doc) != nil || (doc.Version != 1 && doc.Version != 2) || doc.Entries == nil || len(doc.Entries) > MaxEntries {
+	if d.Decode(&doc) != nil || (doc.Version != 1 && doc.Version != 2) || doc.Entries == nil ||
+		len(doc.Entries) > MaxEntries {
 		return nil, ErrInvalid
 	}
 	for key, entry := range doc.Entries {
-		if doc.Version == 1 && (entry.RepositoryID != "" || !entry.NotBefore.IsZero() || entry.LastSuccess.IsZero()) {
-			return nil, ErrInvalid
-		}
-		if (doc.Version == 2 && entry.RepositoryID == "") || key == "" || entry.UID == "" || entry.Created.IsZero() || (!entry.LastSuccess.IsZero() && (entry.LastSuccess.Before(entry.Created) || entry.Source == "")) ||
-			(entry.LastSuccess.IsZero() && (entry.RepositoryID == "" || entry.Source != "")) ||
-			(!entry.NotBefore.IsZero() && (entry.NotBefore.Before(entry.Created) || (!entry.LastSuccess.IsZero() && !entry.LastSuccess.After(entry.NotBefore)))) {
+		if !validEntry(doc.Version, key, entry) {
 			return nil, ErrInvalid
 		}
 	}
 	return doc.Entries, nil
+}
+
+// validEntry checks one ledger entry against its document version's rules.
+func validEntry(version int, key string, entry Entry) bool {
+	if version == 1 {
+		return entry.RepositoryID == "" && entry.NotBefore.IsZero() && !entry.LastSuccess.IsZero()
+	}
+	if !validFields(key, entry) || !validTimeline(entry) {
+		return false
+	}
+	return true
+}
+
+// validFields checks the version-2 identity fields of one entry.
+func validFields(key string, entry Entry) bool {
+	if entry.RepositoryID == "" || key == "" || entry.UID == "" || entry.Created.IsZero() {
+		return false
+	}
+	if !entry.LastSuccess.IsZero() {
+		if entry.LastSuccess.Before(entry.Created) || entry.Source == "" {
+			return false
+		}
+	} else if entry.RepositoryID == "" || entry.Source != "" {
+		return false
+	}
+	return true
+}
+
+// validTimeline checks the notBefore barrier against creation and success.
+func validTimeline(entry Entry) bool {
+	if entry.NotBefore.IsZero() {
+		return true
+	}
+	if entry.NotBefore.Before(entry.Created) {
+		return false
+	}
+	if !entry.LastSuccess.IsZero() && !entry.LastSuccess.After(entry.NotBefore) {
+		return false
+	}
+	return true
 }
 
 // Encode writes a version 2 document, refusing one that could not be loaded back.
@@ -92,7 +128,7 @@ func Encode(entries Ledger) ([]byte, error) {
 	}
 	data, err := json.Marshal(document{Version: 2, Entries: entries})
 	if err != nil {
-		return nil, fmt.Errorf("encode state ledger")
+		return nil, errors.New("encode state ledger")
 	}
 	if len(data) > MaxBytes {
 		return nil, ErrTooLarge
@@ -116,7 +152,7 @@ func ValidateFile(path string) (Ledger, error) {
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, MaxBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read ledger file")
+		return nil, errors.New("read ledger file")
 	}
 	return Decode(data)
 }
@@ -202,9 +238,7 @@ func (c *ConfigMap) Write(ctx context.Context, data, version string) (string, er
 		return "", ErrNotLoaded
 	}
 	next := make(map[string]string, len(c.last.Data)+1)
-	for k, v := range c.last.Data {
-		next[k] = v
-	}
+	maps.Copy(next, c.last.Data)
 	next[Key] = data
 	updated, err := c.Client.UpdateConfigMap(ctx, c.Namespace, c.Name, c.last, next)
 	// A successful PUT can return a ledger changed by admission.

@@ -22,51 +22,101 @@ type Check struct {
 }
 
 func New(c config.DoH) *Check {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		defaultTransport = &http.Transport{}
+	}
+	transport := defaultTransport.Clone()
 	transport.Proxy = nil
 	// An existing connection can bypass DNS and keep reaching an old address.
 	transport.DisableKeepAlives = true
 	if c.DNSResolver != "" {
-		resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, network, c.DNSResolver)
-		}}
+		resolver := &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, c.DNSResolver)
+			},
+		}
 		transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second, Resolver: resolver}).DialContext
 	}
-	return &Check{c, &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
-}
-func (*Check) Name() string { return "doh" }
-func (*Check) Describe() []result.Collection {
-	return []result.Collection{{Route: "doh", Check: "doh", Singleton: true, Dimensions: []string{"answer"}}}
-}
-func (c *Check) Collect(ctx context.Context, _ func() time.Time) ([]result.Collection, error) {
-	verdict := "invalid_response"
-	query := question(c.config.Name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.URL, bytes.NewReader(query))
-	if err == nil {
-		req.Header.Set("Content-Type", "application/dns-message")
-		req.Header.Set("Accept", "application/dns-message")
-		resp, e := c.client.Do(req)
-		if e == nil {
-			defer func() { _ = resp.Body.Close() }()
-			media, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-			body, e := io.ReadAll(io.LimitReader(resp.Body, 65536))
-			if e == nil && len(body) <= 65535 && resp.StatusCode == http.StatusOK && media == "application/dns-message" && valid(body, query, c.config.Name, net.ParseIP(c.config.ExpectedIPv4).To4()) {
-				verdict = result.OK
-			}
-		}
+	return &Check{
+		c,
+		&http.Client{
+			Transport:     transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
-	return []result.Collection{{Route: "doh", Check: "doh", Singleton: true, Dimensions: []string{"answer"}, Results: map[string]string{"answer": verdict}}}, nil
 }
+
+// checkName is the DoH check route and name.
+const checkName = "doh"
+
+func (*Check) Name() string { return checkName }
+func (*Check) Describe() []result.Collection {
+	return []result.Collection{
+		{Route: checkName, Check: checkName, Singleton: true, Dimensions: []string{"answer"}},
+	}
+}
+
+// question encodes one DoH query for the configured hostname.
 func question(name string) []byte {
 	b := []byte{0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0}
-	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
-		b = append(b, byte(len(label)))
+	for label := range strings.SplitSeq(strings.TrimSuffix(name, "."), ".") {
+		labelLen := len(label)
+		if labelLen > 255 {
+			return nil
+		}
+		b = append(b, byte(labelLen))
 		b = append(b, label...)
 	}
 	return append(b, 0, 0, 1, 0, 1)
 }
 
-// readName follows bounded compression pointers and returns the offset after the encoded name.
+func (c *Check) Collect(ctx context.Context, _ func() time.Time) ([]result.Collection, error) {
+	verdict := "invalid_response"
+	query := question(c.config.Name)
+	req, err := http.NewRequestWithContext(
+
+		ctx,
+		http.MethodPost,
+		c.config.URL,
+		bytes.NewReader(query),
+	)
+	if err == nil {
+		req.Header.Set("Content-Type", "application/dns-message")
+		req.Header.Set("Accept", "application/dns-message")
+		if c.lookup(req, query) {
+			verdict = result.OK
+		}
+	}
+	return []result.Collection{
+		{
+			Route:      checkName,
+			Check:      checkName,
+			Singleton:  true,
+			Dimensions: []string{"answer"},
+			Results:    map[string]string{"answer": verdict},
+		},
+	}, nil
+}
+
+// lookup performs the DoH lookup and reports whether the answer is valid.
+func (c *Check) lookup(req *http.Request, query []byte) bool {
+	resp, e := c.client.Do(req)
+	if e != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	media, _, mediaErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if mediaErr != nil {
+		media = ""
+	}
+	body, e := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	return e == nil && len(body) <= 65535 && resp.StatusCode == http.StatusOK &&
+		media == "application/dns-message" &&
+		valid(body, query, c.config.Name, net.ParseIP(c.config.ExpectedIPv4).To4())
+}
+
 func readName(b []byte, off int) (string, int, bool) {
 	var labels []string
 	next := -1
@@ -111,23 +161,45 @@ func readName(b []byte, off int) (string, int, bool) {
 		off += n
 	}
 }
+
+// isResponse checks the DoH message header against the query and name.
+func isResponse(b, q []byte, name string) (int, int, string, bool) {
+	if len(b) < 12 || len(q) < 12 ||
+		binary.BigEndian.Uint16(b[:2]) != binary.BigEndian.Uint16(q[:2]) ||
+		b[2]&0xfa != 0x80 ||
+		b[3]&0x0f != 0 ||
+		binary.BigEndian.Uint16(b[4:6]) != 1 {
+		return 0, 0, "", false
+	}
+	count := int(binary.BigEndian.Uint16(b[6:8]))
+	qname, off, ok := readName(b, 12)
+	if !ok || qname != strings.ToLower(strings.TrimSuffix(name, ".")) || off+4 > len(b) ||
+		binary.BigEndian.Uint16(b[off:off+2]) != 1 ||
+		binary.BigEndian.Uint16(b[off+2:off+4]) != 1 {
+		return 0, 0, "", false
+	}
+	return count, off + 4, qname, true
+}
+
+// isAnswer reports whether one resource record is the expected A record.
+func isAnswer(owner, qname string, typ, class uint16, rdata []byte, expected net.IP) bool {
+	return owner == qname && typ == 1 && class == 1 && len(rdata) == 4 &&
+		net.IP(rdata).Equal(expected)
+}
+
 func valid(b, q []byte, name string, expected net.IP) bool {
-	if len(b) < 12 || len(q) < 12 || binary.BigEndian.Uint16(b[:2]) != binary.BigEndian.Uint16(q[:2]) || b[2]&0xfa != 0x80 || b[3]&0x0f != 0 || binary.BigEndian.Uint16(b[4:6]) != 1 {
+	an, off, qname, ok := isResponse(b, q, name)
+	if !ok {
 		return false
 	}
-	an := int(binary.BigEndian.Uint16(b[6:8]))
-	ns := int(binary.BigEndian.Uint16(b[8:10]))
-	ar := int(binary.BigEndian.Uint16(b[10:12]))
+	var ns, ar int
+	ns = int(binary.BigEndian.Uint16(b[8:10]))
+	ar = int(binary.BigEndian.Uint16(b[10:12]))
 	if an == 0 {
 		return false
 	}
-	qname, off, ok := readName(b, 12)
-	if !ok || qname != strings.ToLower(strings.TrimSuffix(name, ".")) || off+4 > len(b) || binary.BigEndian.Uint16(b[off:off+2]) != 1 || binary.BigEndian.Uint16(b[off+2:off+4]) != 1 {
-		return false
-	}
-	off += 4
 	found := false
-	for i := 0; i < an+ns+ar; i++ {
+	for i := range an + ns + ar {
 		owner, n, good := readName(b, off)
 		if !good || n+10 > len(b) {
 			return false
@@ -139,7 +211,7 @@ func valid(b, q []byte, name string, expected net.IP) bool {
 		if off+size > len(b) {
 			return false
 		}
-		if i < an && owner == qname && typ == 1 && class == 1 && size == 4 && net.IP(b[off:off+4]).Equal(expected) {
+		if i < an && isAnswer(owner, qname, typ, class, b[off:off+size], expected) {
 			found = true
 		}
 		off += size

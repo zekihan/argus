@@ -7,5 +7,8 @@ import (
 )
 
 func init() {
-	register("doh", func(cfg config.Config, _ Deps) (runner.Check, error) { return doh.New(*cfg.Checks.DoH), nil })
+	register(
+		"doh",
+		func(cfg config.Config, _ Deps) (runner.Check, error) { return doh.New(*cfg.Checks.DoH), nil },
+	)
 }

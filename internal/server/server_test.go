@@ -10,7 +10,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"io"
 	"log/slog"
 	"math"
 	"math/big"
@@ -39,30 +38,35 @@ func (fakeRoutes) Lookup(path string, _ time.Time) (int, any) {
 }
 
 func (fakeRoutes) Index(time.Time) (int, runner.Index) {
-	return 200, runner.Index{Envelope: result.Envelope{Check: "argus", Healthy: true, Results: map[string]string{"apiserver": "ok"}},
-		Routes: map[string]string{"/v1/things/ns/a": "ready: not_ready"}}
+	return 200, runner.Index{
+		Check:   "argus",
+		Healthy: true,
+		Results: map[string]string{"apiserver": "ok"},
+		Routes:  map[string]string{"/v1/things/ns/a": "ready: not_ready"},
+	}
 }
 
 func writeToken(t *testing.T, value string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-func TestAuthorizationOnEveryRouteButHealthz(t *testing.T) {
-	path := writeToken(t, testToken+"\n")
-	handler := Handler(fakeRoutes{}, path, nil)
+// assertUnauthorized matrix-checks every route with missing or wrong credentials.
+func assertUnauthorized(t *testing.T, handler http.Handler) {
+	t.Helper()
 	for _, route := range []string{"/v1/checks", "/v1/things", "/v1/things/ns/a", "/v1/unknown", "/unknown", "/v1/"} {
 		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
 			for _, header := range []string{"", "Bearer wrong", "Basic " + testToken} {
-				req := httptest.NewRequest(method, route, nil)
+				req := httptest.NewRequestWithContext(t.Context(), method, route, nil)
 				req.Header.Set("Authorization", header)
 				response := httptest.NewRecorder()
 				handler.ServeHTTP(response, req)
-				if response.Code != 401 || response.Header().Get("WWW-Authenticate") == "" || response.Header().Get("Cache-Control") != "no-store" {
+				if response.Code != 401 || response.Header().Get("WWW-Authenticate") == "" ||
+					response.Header().Get("Cache-Control") != "no-store" {
 					t.Fatal(route, method, response)
 				}
 				if method == http.MethodHead && response.Body.Len() != 0 {
@@ -76,8 +80,63 @@ func TestAuthorizationOnEveryRouteButHealthz(t *testing.T) {
 			}
 		}
 	}
+}
+
+// assertRotation verifies token rotation takes effect immediately.
+func assertRotation(
+	t *testing.T,
+	request func(string, string) *httptest.ResponseRecorder,
+	rotated string,
+) {
+	t.Helper()
+	if request("/v1/checks", testToken).Code != 401 || request("/v1/checks", rotated).Code != 200 {
+		t.Fatal("rotation did not take effect")
+	}
+}
+
+// assertDuplicateRejected verifies duplicate Authorization headers fail.
+func assertDuplicateRejected(t *testing.T, handler http.Handler, rotated string) {
+	t.Helper()
+	duplicate := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/checks", nil)
+	duplicate.Header.Add("Authorization", "Bearer "+rotated)
+	duplicate.Header.Add("Authorization", "Bearer "+rotated)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, duplicate)
+	if recorder.Code != 401 {
+		t.Fatal("duplicate credentials accepted")
+	}
+}
+
+// assertCredentialFiles verifies invalid and missing credentials fail closed.
+func assertCredentialFiles(
+	t *testing.T,
+	path string,
+	request func(string, string) *httptest.ResponseRecorder,
+	rotated string,
+) {
+	t.Helper()
+	for _, invalid := range []string{"", "short", strings.Repeat("x", 4097), testToken + "\n\n"} {
+		if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if request("/v1/checks", rotated).Code != 503 || request("/healthz", "").Code != 200 {
+			t.Fatal("invalid credential did not fail closed or broke probes")
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if request("/v1/checks", rotated).Code != 503 || request("/healthz", "").Code != 200 {
+		t.Fatal("missing credential did not fail closed")
+	}
+}
+
+func TestAuthorizationOnEveryRouteButHealthz(t *testing.T) {
+	path := writeToken(t, testToken+"\n")
+	handler := Handler(fakeRoutes{}, path, nil)
+	assertUnauthorized(t, handler)
 	request := func(route, token string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, route, nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, route, nil)
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -91,37 +150,18 @@ func TestAuthorizationOnEveryRouteButHealthz(t *testing.T) {
 		}
 	}
 	rotated := testToken + "-rotated"
-	if err := os.WriteFile(path, []byte(rotated), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(rotated), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if request("/v1/checks", testToken).Code != 401 || request("/v1/checks", rotated).Code != 200 {
-		t.Fatal("rotation did not take effect")
-	}
-	duplicate := httptest.NewRequest(http.MethodGet, "/v1/checks", nil)
-	duplicate.Header.Add("Authorization", "Bearer "+rotated)
-	duplicate.Header.Add("Authorization", "Bearer "+rotated)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, duplicate)
-	if recorder.Code != 401 {
-		t.Fatal("duplicate credentials accepted")
-	}
-	for _, invalid := range []string{"", "short", strings.Repeat("x", 4097), testToken + "\n\n"} {
-		if err := os.WriteFile(path, []byte(invalid), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if request("/v1/checks", rotated).Code != 503 || request("/healthz", "").Code != 200 {
-			t.Fatal("invalid credential did not fail closed or broke probes")
-		}
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if request("/v1/checks", rotated).Code != 503 || request("/healthz", "").Code != 200 {
-		t.Fatal("missing credential did not fail closed")
-	}
+	assertRotation(t, request, rotated)
+	assertDuplicateRejected(t, handler, rotated)
+	assertCredentialFiles(t, path, request, rotated)
 	for method, code := range map[string]int{"HEAD": 200, "POST": 405} {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(method, "/healthz", nil))
+		handler.ServeHTTP(
+			recorder,
+			httptest.NewRequestWithContext(t.Context(), method, "/healthz", nil),
+		)
 		if recorder.Code != code || (method == "HEAD" && recorder.Body.Len() != 0) {
 			t.Fatal(method, recorder.Code)
 		}
@@ -131,7 +171,10 @@ func TestAuthorizationOnEveryRouteButHealthz(t *testing.T) {
 type unencodableRoutes struct{ fakeRoutes }
 
 func (unencodableRoutes) Lookup(string, time.Time) (int, any) {
-	return http.StatusOK, result.Envelope{Healthy: true, Values: map[string]any{"memoryAllocatable": math.Inf(1)}}
+	return http.StatusOK, result.Envelope{
+		Healthy: true,
+		Values:  map[string]any{"memoryAllocatable": math.Inf(1)},
+	}
 }
 
 func TestUnencodableResponseFailsClosed(t *testing.T) {
@@ -141,12 +184,18 @@ func TestUnencodableResponseFailsClosed(t *testing.T) {
 		http.MethodHead: "",
 	} {
 		t.Run(method, func(t *testing.T) {
-			req := httptest.NewRequest(method, "/v1/things/ns/a", nil)
+			req := httptest.NewRequestWithContext(t.Context(), method, "/v1/things/ns/a", nil)
 			req.Header.Set("Authorization", "Bearer "+testToken)
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, req)
-			if response.Code != http.StatusServiceUnavailable || response.Body.String() != wantBody {
-				t.Fatalf("got HTTP %d with body %q, want 503 with body %q", response.Code, response.Body, wantBody)
+			if response.Code != http.StatusServiceUnavailable ||
+				response.Body.String() != wantBody {
+				t.Fatalf(
+					"got HTTP %d with body %q, want 503 with body %q",
+					response.Code,
+					response.Body,
+					wantBody,
+				)
 			}
 		})
 	}
@@ -158,9 +207,17 @@ func certificate(t *testing.T, dir, name string) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name},
-		DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: name},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		NotBefore: time.Now().
+			Add(-time.Hour),
+		NotAfter:    time.Now().Add(time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
@@ -170,10 +227,18 @@ func certificate(t *testing.T, dir, name string) (string, string) {
 		t.Fatal(err)
 	}
 	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
-	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600); err != nil {
+	if err := os.WriteFile(
+		certFile,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
+	if err := os.WriteFile(
+		keyFile,
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	return certFile, keyFile
@@ -181,12 +246,62 @@ func certificate(t *testing.T, dir, name string) (string, string) {
 
 func servedName(t *testing.T, address string) string {
 	t.Helper()
-	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) // #nosec G402 -- inspects the served certificate only.
+	conn, err := (&tls.Dialer{Config: &tls.Config{InsecureSkipVerify: true}}).DialContext(
+		t.Context(),
+		"tcp",
+		address,
+	) // #nosec G402 -- inspects the served certificate only.
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	return conn.ConnectionState().PeerCertificates[0].Subject.CommonName
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		t.Fatal("TLS dial did not return a *tls.Conn")
+	}
+	return tlsConn.ConnectionState().PeerCertificates[0].Subject.CommonName
+}
+
+// waitServedName polls until the served certificate has the wanted CN.
+func waitServedName(t *testing.T, address, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if name := servedName(t, address); name == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("served certificate is not %s", want)
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-t.Context().Done():
+			t.Fatal("test context canceled while waiting for certificate")
+		}
+	}
+}
+
+// assertNoPlainHTTP verifies plain HTTP gets no 200 on the TLS listener.
+func assertNoPlainHTTP(t *testing.T, address string) {
+	t.Helper()
+	plainReq, err := http.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"http://"+address+"/healthz",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := http.DefaultClient.Do(plainReq)
+	if err == nil && plain.StatusCode == http.StatusOK {
+		t.Fatal("plain HTTP served on the TLS listener")
+	}
+	if plain != nil {
+		if err := plain.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestServesTLSAndFollowsCertificateRenewal(t *testing.T) {
@@ -196,7 +311,7 @@ func TestServesTLSAndFollowsCertificateRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,25 +325,20 @@ func TestServesTLSAndFollowsCertificateRenewal(t *testing.T) {
 		t.Fatal(name)
 	}
 	certificate(t, dir, "renewed")
-	time.Sleep(20 * time.Millisecond)
-	if name := servedName(t, listener.Addr().String()); name != "renewed" {
-		t.Fatal("renewal not picked up", name)
-	}
+	waitServedName(t, listener.Addr().String(), "renewed")
 	// A broken pair keeps the last good certificate serving.
-	if err := os.WriteFile(keyFile, []byte("not a key"), 0600); err != nil {
+	if err := os.WriteFile(keyFile, []byte("not a key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-time.After(20 * time.Millisecond):
+	case <-t.Context().Done():
+		t.Fatal("test context canceled while waiting for failed renewal")
+	}
 	if name := servedName(t, listener.Addr().String()); name != "renewed" {
 		t.Fatal("broken renewal replaced the certificate", name)
 	}
-	plain, err := http.Get("http://" + listener.Addr().String() + "/healthz")
-	if err == nil && plain.StatusCode == 200 {
-		t.Fatal("plain HTTP served on the TLS listener")
-	}
-	if plain != nil {
-		plain.Body.Close()
-	}
+	assertNoPlainHTTP(t, listener.Addr().String())
 	cancel()
 	select {
 	case err := <-done:
@@ -247,7 +357,7 @@ func TestServeBoundsWaitForBlockedPoller(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	started := make(chan struct{})
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +366,7 @@ func TestServeBoundsWaitForBlockedPoller(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- serve(ctx, listener, func(context.Context) { close(started); <-release }, fakeRoutes{}, "", nil,
-			slog.New(slog.NewTextHandler(io.Discard, nil)), nil, 50*time.Millisecond)
+			slog.New(slog.DiscardHandler), nil, 50*time.Millisecond)
 	}()
 	select {
 	case <-started:

@@ -14,27 +14,19 @@ import (
 	"time"
 )
 
-func TestNodeStatsVerifiedTLSRotatingTokenAndIsolation(t *testing.T) {
-	token := "first-synthetic-token"
-	requests := 0
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		if r.URL.Path != "/stats/summary" || r.Method != "GET" || r.Header.Get("Authorization") != "Bearer "+token {
-			t.Errorf("unexpected request")
-		}
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-	dir := t.TempDir()
-	ca := filepath.Join(dir, "ca")
-	tf := filepath.Join(dir, "token")
-	os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0600)
-	os.WriteFile(tf, []byte(token), 0600)
-	c, err := New("https://apiserver.example", tf, ca, "test", time.Second)
-	if err != nil {
-		t.Fatal(err)
+// assertNodeStatsForbidden fails closed under forbidden, rotating the token.
+func assertNodeStatsForbidden(
+	t *testing.T,
+	c *Client,
+	tf string,
+	srv *httptest.Server,
+	token *string,
+) {
+	t.Helper()
+	transport, ok := c.HTTP.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("client transport is not *http.Transport")
 	}
-	transport := c.HTTP.Transport.(*http.Transport)
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if address != "192.0.2.1:10250" {
 			t.Errorf("unexpected target %s", address)
@@ -49,14 +41,56 @@ func TestNodeStatsVerifiedTLSRotatingTokenAndIsolation(t *testing.T) {
 		if err := c.NodeStats(t.Context(), "192.0.2.1", &out); CodeOf(err) != CodeForbidden {
 			t.Fatal(err)
 		}
-		token = "rotated-synthetic-token"
-		os.WriteFile(tf, []byte(token), 0600)
+		*token = "rotated-synthetic-token"
+		if err := os.WriteFile(tf, []byte(*token), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if requests != 2 || !c.Health(time.Time{}).LastFailure.IsZero() || c.Health(time.Time{}).ForbiddenPaths != 0 {
+}
+
+func TestNodeStatsVerifiedTLSRotatingTokenAndIsolation(t *testing.T) {
+	token := "first-synthetic-token"
+	requests := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/stats/summary" || r.Method != http.MethodGet ||
+			r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("unexpected request")
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	ca := filepath.Join(dir, "ca")
+	tf := filepath.Join(dir, "token")
+	if err := os.WriteFile(
+		ca,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tf, []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New("https://apiserver.example", tf, ca, "test", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNodeStatsForbidden(t, c, tf, srv, &token)
+	if requests != 2 || !c.Health(time.Time{}).LastFailure.IsZero() ||
+		c.Health(time.Time{}).ForbiddenPaths != 0 {
 		t.Fatal("kubelet failure contaminated API health")
 	}
-	transport.CloseIdleConnections()
-	transport.TLSClientConfig = &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}
+	c.HTTP.CloseIdleConnections()
+	if clientTransport, ok := c.HTTP.Transport.(*http.Transport); ok {
+		clientTransport.TLSClientConfig = &tls.Config{
+			RootCAs:    x509.NewCertPool(),
+			MinVersion: tls.VersionTLS12,
+		}
+	} else {
+		t.Fatal("client transport is not *http.Transport")
+	}
 	var out any
 	if err := c.NodeStats(t.Context(), "192.0.2.1", &out); CodeOf(err) != CodeUnreachable {
 		t.Fatal("untrusted TLS passed", err)

@@ -12,14 +12,14 @@ import (
 // encoding, standing in for backrestwatch's file checkpoint in ported tests.
 type fileStore struct{ path string }
 
-func openStore(path string) (*fileStore, error) { return &fileStore{path: path}, nil }
+func openStore(path string) *fileStore { return &fileStore{path: path} }
 
 func (f *fileStore) Save(ledger state.Ledger) error {
 	data, err := state.Encode(ledger)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(f.path, data, 0600)
+	return os.WriteFile(f.path, data, 0o600)
 }
 
 func (f *fileStore) Load() (state.Ledger, error) {

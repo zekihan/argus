@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -19,9 +20,11 @@ import (
 	"github.com/zekihan/argus/internal/state"
 )
 
+const stateMissing = "missing"
+
 const (
 	Route = "pgbackrest"
-	// writeAttempts bounds conditional writes per sample; each failed write is
+	// WriteAttempts bounds conditional writes per sample; each failed write is
 	// followed by a read-back and a re-evaluation.
 	writeAttempts = 3
 )
@@ -56,19 +59,38 @@ type API struct {
 func (a API) Collect(ctx context.Context) (Sample, error) {
 	var sample Sample
 	var err error
-	if sample.Clusters, err = kube.List[kube.Cluster](ctx, a.Client, "/apis/"+kube.ClusterAPI+"/postgresclusters", ""); err != nil {
+	if sample.Clusters, err = kube.List[kube.Cluster](
+		ctx,
+		a.Client,
+		"/apis/"+kube.ClusterAPI+"/postgresclusters",
+		"",
+	); err != nil {
 		return Sample{}, err
 	}
 	for _, namespace := range a.Namespaces {
-		jobs, err := kube.List[kube.Job](ctx, a.Client, "/apis/batch/v1/namespaces/"+namespace+"/jobs", kube.Prefix+"pgbackrest-backup")
+		jobs, err := kube.List[kube.Job](
+			ctx,
+			a.Client,
+			"/apis/batch/v1/namespaces/"+namespace+"/jobs",
+			kube.Prefix+"pgbackrest-backup",
+		)
 		if err != nil {
 			return Sample{}, err
 		}
-		crons, err := kube.List[kube.CronJob](ctx, a.Client, "/apis/batch/v1/namespaces/"+namespace+"/cronjobs", kube.Prefix+"pgbackrest-backup=scheduled")
+		crons, err := kube.List[kube.CronJob](
+			ctx,
+			a.Client,
+			"/apis/batch/v1/namespaces/"+namespace+"/cronjobs",
+			kube.Prefix+"pgbackrest-backup=scheduled",
+		)
 		if err != nil {
 			return Sample{}, err
 		}
-		sample.Jobs, sample.CronJobs = append(sample.Jobs, jobs...), append(sample.CronJobs, crons...)
+		sample.Jobs, sample.CronJobs = append(
+			sample.Jobs,
+			jobs...), append(
+			sample.CronJobs,
+			crons...)
 	}
 	return sample, nil
 }
@@ -108,7 +130,7 @@ type Check struct {
 	readOnly bool
 	logger   *slog.Logger
 
-	// ledger holds persisted successes plus invalidations not yet persisted;
+	// Ledger holds persisted successes plus invalidations not yet persisted;
 	// persisted is the ledger last read from or written to the store.
 	ledger     state.Ledger
 	persisted  state.Ledger
@@ -118,68 +140,50 @@ type Check struct {
 	missing    []string
 }
 
-// New returns the check. readOnly evaluates against the stored ledger without writing.
-func New(c config.PGBackRest, api Collector, store Persistence, readOnly bool, logger *slog.Logger) *Check {
-	return &Check{config: c, api: api, store: store, readOnly: readOnly, logger: logger, views: map[string]published{}}
+// New returns the check. ReadOnly evaluates against the stored ledger without writing.
+func New(
+	c config.PGBackRest,
+	api Collector,
+	store Persistence,
+	readOnly bool,
+	logger *slog.Logger,
+) *Check {
+	return &Check{
+		config:   c,
+		api:      api,
+		store:    store,
+		readOnly: readOnly,
+		logger:   logger,
+		views:    map[string]published{},
+	}
 }
 
 func (c *Check) Name() string { return "pgbackrest" }
 
-func (c *Check) keys() []string {
-	var keys []string
-	for _, cluster := range c.config.Clusters {
-		for repo := range cluster.Repos {
-			keys = append(keys, cluster.Namespace+"/"+cluster.Name+"/"+repo)
-		}
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func (c *Check) Describe() []result.Collection {
-	collection := result.Collection{Route: Route, Check: "pgbackrest/repository", Dimensions: dimensions}
+	collection := result.Collection{
+		Route:      Route,
+		Check:      "pgbackrest/repository",
+		Dimensions: dimensions,
+	}
 	for _, key := range c.keys() {
 		collection.Items = append(collection.Items, result.Item{Target: key})
 	}
 	return []result.Collection{collection}
 }
 
-func stateCode(err error) string {
-	switch {
-	case errors.Is(err, state.ErrInvalid):
-		return "invalid"
-	case errors.Is(err, state.ErrMissing):
-		return "missing"
-	case errors.Is(err, state.ErrTooLarge):
-		return "too_large"
-	default:
-		return runner.Code(err)
-	}
-}
-
 func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error) {
 	// Read the stored ledger on every sample, so a ledger rolled back by Argo
 	// CD's compare-then-apply, or repaired by an operator, converges on the
 	// next poll rather than at the next write.
-	stored, err := c.store.Load(ctx)
-	if errors.Is(err, state.ErrInvalid) || errors.Is(err, state.ErrMissing) {
-		// A corrupt or unknown document fails closed and is never overwritten:
-		// nothing is evaluated or written until a read succeeds.
-		c.loaded, c.ledger, c.persisted = false, nil, nil
-		c.logger.Error("pgBackRest ledger unavailable", "code", stateCode(err))
-		return c.render(stateCode(err)), nil
+	_, rendered, err := c.loadLedger(ctx)
+	if rendered != nil {
+		return rendered, nil
 	}
 	if err != nil {
 		// An unreadable ConfigMap (403, timeout, outage) fails the collection
 		// like any other API read; pending invalidations stay in memory.
 		return nil, err
-	}
-	switch {
-	case !c.loaded:
-		c.ledger, c.persisted, c.loaded = stored, stored, true
-	case !state.Equal(stored, c.persisted):
-		c.persisted = stored
-		c.ledger = adopt(stored, c.ledger)
 	}
 	sample, err := c.api.Collect(ctx)
 	if err != nil {
@@ -188,11 +192,8 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 	// As in backrestwatch, evaluate after collecting: completions observed
 	// during the read are not in the future.
 	now := clock()
-	results, next, err := Evaluate(c.config, sample, c.ledger, now)
-	if err != nil {
-		if next != nil {
-			c.ledger = retainInvalidations(c.ledger, next)
-		}
+	results, next, ok := c.evaluateAt(sample, now)
+	if !ok {
 		return nil, runner.Fail("rejected")
 	}
 	// Write only when the result differs from what is stored.
@@ -202,7 +203,7 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 		return c.render(result.OK), nil
 	}
 	code := "unpersisted"
-	for attempt := 0; attempt < writeAttempts; attempt++ {
+	for range writeAttempts {
 		err := c.store.Save(ctx, next)
 		if err == nil {
 			c.ledger, c.persisted = next, next
@@ -215,23 +216,18 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 		}
 		// 409, timeout or reset: the write may or may not have landed, or another
 		// writer changed the ledger. Re-read, adopt it and re-evaluate this sample.
-		stored, loadErr := c.store.Load(ctx)
-		if loadErr != nil {
-			if errors.Is(loadErr, state.ErrInvalid) || errors.Is(loadErr, state.ErrMissing) {
-				c.loaded, c.ledger, c.persisted = false, nil, nil
-				c.logger.Error("pgBackRest ledger unavailable", "code", stateCode(loadErr))
-				return c.render(stateCode(loadErr)), nil
-			}
+		stored, render, retry := c.readLedger(ctx)
+		if render != "" {
+			return c.render(render), nil
+		}
+		if !retry {
 			break
 		}
 		c.persisted = stored
 		// A rolled-back ledger can predate the previous destination entirely.
 		c.ledger = adopt(stored, retainInvalidations(c.ledger, next))
-		results, next, err = Evaluate(c.config, sample, c.ledger, now)
-		if err != nil {
-			if next != nil {
-				c.ledger = retainInvalidations(c.ledger, next)
-			}
+		results, next, ok = c.evaluateAt(sample, now)
+		if !ok {
 			return nil, runner.Fail("rejected")
 		}
 		if state.Equal(next, stored) {
@@ -243,8 +239,94 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 	// A failed write must not undo an observed disappearance or destination
 	// change. Retain its safety boundary, but not newly observed successes.
 	c.ledger = retainInvalidations(c.ledger, next)
-	c.logger.Error("pgBackRest ledger write failed", "code", code)
+	c.logger.ErrorContext(ctx, "PgBackRest ledger write failed", slog.String("code", code))
 	return c.render(code), nil
+}
+
+// loadLedger reads the stored ledger and adopts it. A handled collection is
+// returned for a fatal ledger state; an unreadable ledger returns an error.
+func (c *Check) loadLedger(ctx context.Context) (state.Ledger, []result.Collection, error) {
+	stored, err := c.store.Load(ctx)
+	if errors.Is(err, state.ErrInvalid) || errors.Is(err, state.ErrMissing) {
+		// A corrupt or unknown document fails closed and is never overwritten:
+		// nothing is evaluated or written until a read succeeds.
+		c.loaded, c.ledger, c.persisted = false, nil, nil
+		c.logger.ErrorContext(
+			ctx,
+			"PgBackRest ledger unavailable",
+			slog.String("code", stateCode(err)),
+		)
+		return nil, c.render(stateCode(err)), nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	switch {
+	case !c.loaded:
+		c.ledger, c.persisted, c.loaded = stored, stored, true
+	case !state.Equal(stored, c.persisted):
+		c.persisted = stored
+		c.ledger = adopt(stored, c.ledger)
+	}
+	return stored, nil, nil
+}
+
+// evaluateAt evaluates the sample, retaining invalidations on rejection.
+func (c *Check) evaluateAt(
+	sample Sample,
+	now time.Time,
+) (map[string]Result, state.Ledger, bool) {
+	results, next, err := Evaluate(c.config, sample, c.ledger, now)
+	if err != nil {
+		if next != nil {
+			c.ledger = retainInvalidations(c.ledger, next)
+		}
+		return nil, next, false
+	}
+	return results, next, true
+}
+
+// readLedger re-reads the stored ledger. A fatal ledger state renders with
+// its code; an unreadable ledger does not retry (retry=false).
+func (c *Check) readLedger(ctx context.Context) (state.Ledger, string, bool) {
+	stored, err := c.store.Load(ctx)
+	if err != nil {
+		if errors.Is(err, state.ErrInvalid) || errors.Is(err, state.ErrMissing) {
+			c.loaded, c.ledger, c.persisted = false, nil, nil
+			c.logger.ErrorContext(
+				ctx,
+				"PgBackRest ledger unavailable",
+				slog.String("code", stateCode(err)),
+			)
+			return nil, stateCode(err), false
+		}
+		return nil, "", false
+	}
+	return stored, "", true
+}
+
+func stateCode(err error) string {
+	switch {
+	case errors.Is(err, state.ErrInvalid):
+		return "invalid"
+	case errors.Is(err, state.ErrMissing):
+		return stateMissing
+	case errors.Is(err, state.ErrTooLarge):
+		return "too_large"
+	default:
+		return runner.Code(err)
+	}
+}
+
+func (c *Check) keys() []string {
+	var keys []string
+	for _, cluster := range c.config.Clusters {
+		for repo := range cluster.Repos {
+			keys = append(keys, cluster.Namespace+"/"+cluster.Name+"/"+repo)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // adopt takes the stored ledger after a failed write, keeping any barrier this
@@ -254,9 +336,7 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 // destination reverted before it could be written.
 func adopt(stored, current state.Ledger) state.Ledger {
 	out := make(state.Ledger, len(stored))
-	for key, entry := range stored {
-		out[key] = entry
-	}
+	maps.Copy(out, stored)
 	for key, entry := range current {
 		old, ok := stored[key]
 		if !entry.NotBefore.IsZero() && (!ok || entry.NotBefore.After(old.NotBefore)) {
@@ -270,8 +350,10 @@ func retainInvalidations(previous, next state.Ledger) state.Ledger {
 	pending := make(state.Ledger, len(next))
 	for key, entry := range next {
 		old := previous[key]
-		if !entry.LastSuccess.IsZero() && old.UID == entry.UID && old.Created.Equal(entry.Created) &&
-			old.RepositoryID == entry.RepositoryID && old.NotBefore.Equal(entry.NotBefore) {
+		if !entry.LastSuccess.IsZero() && old.UID == entry.UID &&
+			old.Created.Equal(entry.Created) &&
+			old.RepositoryID == entry.RepositoryID &&
+			old.NotBefore.Equal(entry.NotBefore) {
 			entry.LastSuccess, entry.Source = old.LastSuccess, old.Source
 		} else {
 			entry.LastSuccess, entry.Source = time.Time{}, ""
@@ -294,7 +376,12 @@ func stanza(cluster kube.Cluster, repo string) string {
 }
 
 // publish records results whose ledger is durable (or, read-only, current).
-func (c *Check) publish(sample Sample, results map[string]Result, ledger state.Ledger, now time.Time) {
+func (c *Check) publish(
+	sample Sample,
+	results map[string]Result,
+	ledger state.Ledger,
+	now time.Time,
+) {
 	clusters := map[string]kube.Cluster{}
 	for _, cluster := range sample.Clusters {
 		clusters[cluster.Metadata.Namespace+"/"+cluster.Metadata.Name] = cluster
@@ -324,8 +411,10 @@ func (c *Check) publish(sample Sample, results map[string]Result, ledger state.L
 }
 
 func (c *Check) render(stateResult string) []result.Collection {
-	collection := result.Collection{Route: Route, Check: "pgbackrest/repository", Dimensions: dimensions,
-		Results: map[string]string{"inventory": result.Inventory(c.missing, c.unexpected)}}
+	collection := result.Collection{
+		Route: Route, Check: "pgbackrest/repository", Dimensions: dimensions,
+		Results: map[string]string{"inventory": result.Inventory(c.missing, c.unexpected)},
+	}
 	if stateResult != result.OK && len(c.views) == 0 {
 		collection.Results["inventory"] = result.Pending
 	}
@@ -335,7 +424,12 @@ func (c *Check) render(stateResult string) []result.Collection {
 		if p.valid {
 			item = p.view.item(key, c.readOnly)
 		} else {
-			item.Results = map[string]string{"freshness": result.Pending, "evidence": result.Pending, "destination": result.Pending, "stanza": result.Pending}
+			item.Results = map[string]string{
+				"freshness":   result.Pending,
+				"evidence":    result.Pending,
+				"destination": result.Pending,
+				"stanza":      result.Pending,
+			}
 			item.Values = map[string]any{}
 		}
 		item.Results["state"] = stateResult
@@ -344,9 +438,40 @@ func (c *Check) render(stateResult string) []result.Collection {
 	return []result.Collection{collection}
 }
 
-func (v view) item(key string, readOnly bool) result.Item {
+// applyReason maps the evaluation reason to per-dimension results.
+func applyReason(reason string, results map[string]string) {
+	switch reason {
+	case "":
+	case "Expected PostgresCluster is missing":
+		results["destination"], results["freshness"], results["evidence"], results["stanza"] = result.Reason(
+			"cluster_missing",
+		), result.Reason(
+			"unknown",
+		), result.NA, result.NA
+	case "Expected backup repository is missing":
+		results["destination"], results["freshness"], results["evidence"], results["stanza"] = result.Reason(
+			"repo_missing",
+		), result.Reason(
+			"unknown",
+		), result.NA, result.NA
+	case "Invalid successful backup completion timestamp":
+		results["evidence"], results["freshness"] = result.Reason(
+			"invalid_timestamp",
+		), result.Reason(
+			"unknown",
+		)
+	case "No successful completed backup recorded":
+		results["freshness"] = result.Reason("no_success")
+	case "Last successful backup exceeds maximum age":
+		// Re-derived below from the age.
+	default:
+		results["freshness"] = result.Reason("unknown")
+	}
+}
+
+// itemValues builds the item's value map for readOnly reads.
+func (v view) itemValues(readOnly bool) map[string]any {
 	r := v.result
-	results := map[string]string{"freshness": result.OK, "evidence": result.OK, "destination": result.OK, "stanza": v.stanza}
 	values := map[string]any{"maxAgeSeconds": r.MaxAgeSeconds}
 	if r.ClusterUID != "" {
 		values["clusterUID"] = r.ClusterUID
@@ -361,25 +486,32 @@ func (v view) item(key string, readOnly bool) result.Item {
 		values["lastSuccess"] = r.LastSuccess.UTC().Format(time.RFC3339Nano)
 		values["source"] = r.Source
 	}
-	switch r.Reason {
-	case "":
-	case "Expected PostgresCluster is missing":
-		results["destination"], results["freshness"], results["evidence"], results["stanza"] = result.Reason("cluster_missing"), result.Reason("unknown"), result.NA, result.NA
-	case "Expected backup repository is missing":
-		results["destination"], results["freshness"], results["evidence"], results["stanza"] = result.Reason("repo_missing"), result.Reason("unknown"), result.NA, result.NA
-	case "Invalid successful backup completion timestamp":
-		results["evidence"], results["freshness"] = result.Reason("invalid_timestamp"), result.Reason("unknown")
-	case "No successful completed backup recorded":
-		results["freshness"] = result.Reason("no_success")
-	case "Last successful backup exceeds maximum age":
-		// Re-derived below from the age.
-	default:
-		results["freshness"] = result.Reason("unknown")
+	return values
+}
+
+// guardBarrier makes the destination fail until a newer backup completes.
+func (v view) guardBarrier(r Result, results map[string]string) {
+	if !v.entry.NotBefore.IsZero() &&
+		(r.LastSuccess == nil || !r.LastSuccess.After(v.entry.NotBefore)) &&
+		results["destination"] == result.OK {
+		results["destination"] = result.Reason(
+			"changed",
+			result.Labeled("since", result.Time(v.entry.NotBefore)),
+		)
 	}
-	// A destination change leaves a barrier until a newer backup completes.
-	if !v.entry.NotBefore.IsZero() && (r.LastSuccess == nil || !r.LastSuccess.After(v.entry.NotBefore)) && results["destination"] == result.OK {
-		results["destination"] = result.Reason("changed", result.Labeled("since", result.Time(v.entry.NotBefore)))
+}
+
+func (v view) item(key string, readOnly bool) result.Item {
+	r := v.result
+	results := map[string]string{
+		"freshness":   result.OK,
+		"evidence":    result.OK,
+		"destination": result.OK,
+		"stanza":      v.stanza,
 	}
+	values := v.itemValues(readOnly)
+	applyReason(r.Reason, results)
+	v.guardBarrier(r, results)
 	item := result.Item{Target: key, Results: results, Values: values}
 	if r.LastSuccess != nil && r.AgeSeconds != nil {
 		lastSuccess, baseAge, maxAge, evaluated := *r.LastSuccess, *r.AgeSeconds, r.MaxAgeSeconds, v.evaluatedAt
@@ -394,14 +526,26 @@ func (v view) item(key string, readOnly bool) result.Item {
 			age := baseAge + elapsed
 			it.Values["ageSeconds"] = age
 			if it.Results["freshness"] == result.OK && age > float64(maxAge) {
-				it.Results["freshness"] = result.Reason("backup_stale", result.Labeled("last", result.Dur(age)), result.Labeled("max", result.Dur(float64(maxAge))))
+				it.Results["freshness"] = result.Reason(
+					"backup_stale",
+					result.Labeled("last", result.Dur(age)),
+					result.Labeled("max", result.Dur(float64(maxAge))),
+				)
 			}
 			if lastSuccess.After(now) {
-				it.Results["evidence"], it.Results["freshness"] = result.Reason("invalid_timestamp"), result.Reason("unknown")
+				it.Results["evidence"], it.Results["freshness"] = result.Reason(
+					"invalid_timestamp",
+				), result.Reason(
+					"unknown",
+				)
 			}
 		}
 		if r.Reason == "Last successful backup exceeds maximum age" {
-			results["freshness"] = result.Reason("backup_stale", result.Labeled("last", result.Dur(baseAge)), result.Labeled("max", result.Dur(float64(maxAge))))
+			results["freshness"] = result.Reason(
+				"backup_stale",
+				result.Labeled("last", result.Dur(baseAge)),
+				result.Labeled("max", result.Dur(float64(maxAge))),
+			)
 		}
 	}
 	return item

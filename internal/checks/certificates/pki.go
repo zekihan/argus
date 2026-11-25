@@ -8,7 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
-	"fmt"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,11 +46,21 @@ func (a PKIAPI) Collect(ctx context.Context) (PKISample, error) {
 	if s.Certificates, err = ListCertificates(ctx, a.Client); err != nil {
 		return PKISample{}, err
 	}
-	if s.Requests, err = kube.List[CertificateRequest](ctx, a.Client, "/apis/cert-manager.io/v1/namespaces/"+a.RootNamespace+"/certificaterequests", ""); err != nil {
+	if s.Requests, err = kube.List[CertificateRequest](
+		ctx,
+		a.Client,
+		"/apis/cert-manager.io/v1/namespaces/"+a.RootNamespace+"/certificaterequests",
+		"",
+	); err != nil {
 		return PKISample{}, err
 	}
 	if a.Bundles {
-		if s.Bundles, err = kube.List[Bundle](ctx, a.Client, "/apis/trust.cert-manager.io/v1alpha1/bundles", ""); err != nil {
+		if s.Bundles, err = kube.List[Bundle](
+			ctx,
+			a.Client,
+			"/apis/trust.cert-manager.io/v1alpha1/bundles",
+			"",
+		); err != nil {
 			return PKISample{}, err
 		}
 	}
@@ -70,16 +80,15 @@ func NewPKI(c config.PKI, api PKICollector) *PKI { return &PKI{config: c, api: a
 func (p *PKI) Name() string { return "pki" }
 
 func (p *PKI) Describe() []result.Collection {
-	collection := result.Collection{Route: PKIRoute, Check: "pki/certificate", Dimensions: pkiDimensions}
+	collection := result.Collection{
+		Route:      PKIRoute,
+		Check:      "pki/certificate",
+		Dimensions: pkiDimensions,
+	}
 	for _, expected := range p.config.ExpectedCertificates {
 		collection.Items = append(collection.Items, result.Item{Target: expected.Key()})
 	}
 	return []result.Collection{collection}
-}
-
-func (p *PKI) profile() Profile {
-	return Profile{RootNamespace: p.config.RootNamespace, RootName: p.config.RootName, IssuerName: p.config.IssuerName,
-		LeafDays: p.config.LeafDays, MarginDays: p.config.MarginDays}
 }
 
 func (p *PKI) Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error) {
@@ -94,7 +103,13 @@ func (p *PKI) Collect(ctx context.Context, clock func() time.Time) ([]result.Col
 
 func (p *PKI) Evaluate(s PKISample, now time.Time) result.Collection {
 	items, rootPresent := p.profile().Assess(s.Certificates, now)
-	collection := result.Collection{Route: PKIRoute, Check: "pki/certificate", Dimensions: pkiDimensions, Items: items, Values: map[string]any{}}
+	collection := result.Collection{
+		Route:      PKIRoute,
+		Check:      "pki/certificate",
+		Dimensions: pkiDimensions,
+		Items:      items,
+		Values:     map[string]any{},
+	}
 	collection.Results = map[string]string{"issuer_present": result.OK, "root_pin": result.NA}
 	if !rootPresent {
 		collection.Results["issuer_present"] = result.Reason("issuer_certificate_missing")
@@ -124,7 +139,10 @@ func (p *PKI) Evaluate(s PKISample, now time.Time) result.Collection {
 				results[dim] = result.NA
 			}
 		}
-		collection.Items = append(collection.Items, result.Item{Target: expected.Key(), Results: results, Values: map[string]any{}})
+		collection.Items = append(
+			collection.Items,
+			result.Item{Target: expected.Key(), Results: results, Values: map[string]any{}},
+		)
 	}
 	collection.Results["inventory"] = result.Inventory(missing, nil)
 	if root, ok := existing[p.config.RootNamespace+"/"+p.config.RootName]; ok {
@@ -134,14 +152,32 @@ func (p *PKI) Evaluate(s PKISample, now time.Time) result.Collection {
 	return collection
 }
 
+func (p *PKI) profile() Profile {
+	return Profile{
+		RootNamespace: p.config.RootNamespace,
+		RootName:      p.config.RootName,
+		IssuerName:    p.config.IssuerName,
+		LeafDays:      p.config.LeafDays,
+		MarginDays:    p.config.MarginDays,
+	}
+}
+
 // rootPin requires exactly one CertificateRequest for the root's current
 // revision, controlled by the root Certificate, whose public certificate has
 // the reviewed fingerprint or, after a same-key renewal, the reviewed SPKI.
-func (p *PKI) rootPin(root Certificate, requests []CertificateRequest, values map[string]any) string {
+func (p *PKI) rootPin(
+	root Certificate,
+	requests []CertificateRequest,
+	values map[string]any,
+) string {
 	status := root.status()
 	var candidates []CertificateRequest
 	for _, request := range requests {
-		if status.Revision == nil || request.Metadata.Annotations["cert-manager.io/certificate-revision"] != strconv.FormatInt(*status.Revision, 10) {
+		if status.Revision == nil ||
+			request.Metadata.Annotations["cert-manager.io/certificate-revision"] != strconv.FormatInt(
+				*status.Revision,
+				10,
+			) {
 			continue
 		}
 		if kube.OwnedBy(request.Metadata, "Certificate", root.Metadata.UID) {
@@ -161,7 +197,8 @@ func (p *PKI) rootPin(root Certificate, requests []CertificateRequest, values ma
 	}
 	values["rootSHA256"] = fingerprint
 	// A same-key renewal keeps the reviewed public key and stays trusted.
-	if fingerprint != p.config.RootSHA256 && (p.config.RootSPKI == "" || err != nil || spki != p.config.RootSPKI) {
+	if fingerprint != p.config.RootSHA256 &&
+		(p.config.RootSPKI == "" || err != nil || spki != p.config.RootSPKI) {
 		return result.Reason("changed_review_public_trust")
 	}
 	return result.OK
@@ -172,17 +209,20 @@ func (p *PKI) rootPin(root Certificate, requests []CertificateRequest, values ma
 // and nothing else, as certificate_monitor.py requires: a bundle, leading
 // text or private key material fails. The SPKI additionally requires a
 // parseable certificate.
-func publicIdentity(data []byte) (fingerprint, spki string, err error) {
+func publicIdentity(data []byte) (string, string, error) {
 	block, rest := pem.Decode(data)
 	if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 ||
-		!bytes.HasPrefix(bytes.TrimSpace(data), []byte("-----BEGIN CERTIFICATE-----")) || len(bytes.TrimSpace(rest)) != 0 {
-		return "", "", fmt.Errorf("exactly one public certificate required")
+		!bytes.HasPrefix(
+			bytes.TrimSpace(data),
+			[]byte("-----BEGIN CERTIFICATE-----"),
+		) || len(bytes.TrimSpace(rest)) != 0 {
+		return "", "", errors.New("exactly one public certificate required")
 	}
 	sum := sha256.Sum256(block.Bytes)
-	fingerprint = hex.EncodeToString(sum[:])
+	fingerprint := hex.EncodeToString(sum[:])
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return fingerprint, "", fmt.Errorf("invalid certificate")
+		return fingerprint, "", errors.New("invalid certificate")
 	}
 	key := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return fingerprint, hex.EncodeToString(key[:]), nil
@@ -209,7 +249,9 @@ func (p *PKI) bundles(list []Bundle) string {
 		}
 		synced := false
 		for _, c := range bundle.Status.Conditions {
-			if c.Type == "Synced" && c.Status == "True" && c.ObservedGeneration != nil && bundle.Metadata.Generation != nil && *c.ObservedGeneration == *bundle.Metadata.Generation {
+			if c.Type == "Synced" && c.Status == conditionTrue && c.ObservedGeneration != nil &&
+				bundle.Metadata.Generation != nil &&
+				*c.ObservedGeneration == *bundle.Metadata.Generation {
 				synced = true
 			}
 		}

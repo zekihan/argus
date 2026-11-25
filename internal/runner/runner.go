@@ -13,9 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zekihan/go-commons/metrics"
+
 	"github.com/zekihan/argus/internal/kube"
 	"github.com/zekihan/argus/internal/result"
-	"github.com/zekihan/go-commons/metrics"
 )
 
 // Check collects one or more collections per sample.
@@ -24,27 +25,25 @@ type Check interface {
 	// Describe returns the static route families with their configured
 	// inventory targets, served before the first sample completes.
 	Describe() []result.Collection
-	// Collect reads and evaluates one sample. clock gives the evaluation
+	// Collect reads and evaluates one sample. Clock gives the evaluation
 	// time; checks call it after their API reads.
 	Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error)
 }
 
-// Failure is a collection failure with a fixed reason code.
-type Failure struct{ Code string }
+// FailureError is a collection failure with a fixed reason code.
+type FailureError struct{ Code string }
 
-func (f *Failure) Error() string { return "collection failed: " + f.Code }
+func (f *FailureError) Error() string { return "collection failed: " + f.Code }
 
-// Fail returns a Failure for a fixed reason code.
-func Fail(code string) error { return &Failure{Code: result.Reason(code)} }
+// Fail returns a FailureError for a fixed reason code.
+func Fail(code string) error { return &FailureError{Code: result.Reason(code)} }
 
 // Code maps a collection error to a fixed reason code, never its text.
 func Code(err error) string {
-	var failure *Failure
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*FailureError](err); ok {
 		return failure.Code
 	}
-	var kerr *kube.Error
-	if errors.As(err, &kerr) {
+	if kerr, ok := errors.AsType[*kube.Error](err); ok {
 		return kerr.Code
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -90,14 +89,22 @@ type Runner struct {
 	probeTimeout  time.Duration
 }
 
-// New returns a runner. api may be nil when no check talks to Kubernetes.
+// New returns a runner. Api may be nil when no check talks to Kubernetes.
 func New(logger *slog.Logger, version string, api HealthSource, apiMaxAge time.Duration) *Runner {
 	return &Runner{logger: logger, version: version, api: api, apiMaxAge: apiMaxAge}
 }
 
 // Add registers a check. Call before Run.
 func (r *Runner) Add(check Check, timing Timing) {
-	r.entries = append(r.entries, &entry{check: check, timing: timing, described: check.Describe(), summaries: map[string]string{}})
+	r.entries = append(
+		r.entries,
+		&entry{
+			check:     check,
+			timing:    timing,
+			described: check.Describe(),
+			summaries: map[string]string{},
+		},
+	)
 }
 
 // Prober makes one lightweight authenticated API request.
@@ -111,17 +118,17 @@ func (r *Runner) ProbeEvery(prober Prober, interval, timeout time.Duration) {
 	r.prober, r.probeInterval, r.probeTimeout = prober, interval, timeout
 }
 
-// Run polls every check on its own interval until ctx is cancelled.
+// Run polls every check on its own interval until ctx is canceled.
 func (r *Runner) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	if r.prober != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				probeCtx, cancel := context.WithTimeout(ctx, r.probeTimeout)
 				// The outcome is recorded by the client; Index reads it.
-				_ = r.prober.Probe(probeCtx)
+				if err := r.prober.Probe(probeCtx); err != nil {
+					r.logger.DebugContext(probeCtx, "API probe failed")
+				}
 				cancel()
 				timer := time.NewTimer(r.probeInterval)
 				select {
@@ -131,12 +138,10 @@ func (r *Runner) Run(ctx context.Context) {
 				case <-timer.C:
 				}
 			}
-		}()
+		})
 	}
 	for _, e := range r.entries {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				if ctx.Err() != nil {
 					return
@@ -150,7 +155,7 @@ func (r *Runner) Run(ctx context.Context) {
 				case <-timer.C:
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -166,60 +171,68 @@ func (r *Runner) Refresh(ctx context.Context, name string) bool {
 	return false
 }
 
-func (r *Runner) refreshEntry(ctx context.Context, e *entry) {
-	e.refresh.Lock()
-	defer e.refresh.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, e.timing.Timeout)
-	defer cancel()
-	now := time.Now()
-	collections, err := e.check.Collect(ctx, time.Now)
-	completedAt := time.Now()
-	if err == nil {
-		err = ctx.Err()
-		deadline, _ := ctx.Deadline()
-		if err == nil && !completedAt.Before(deadline) {
-			err = context.DeadlineExceeded
+// Lookup renders /v1/<path>, where path is a collection route or a route
+// followed by an item target.
+func (r *Runner) Lookup(path string, now time.Time) (int, any) {
+	for _, e := range r.entries {
+		e.mu.RLock()
+		code, body, found := r.lookupEntry(e, path, now)
+		e.mu.RUnlock()
+		if found {
+			return code, body
 		}
 	}
-	e.mu.Lock()
-	e.attemptedAt = completedAt
-	if err != nil {
-		e.failure = Code(err)
-		e.mu.Unlock()
-		r.observeFailure(e.described)
-		// Only the fixed code is logged: errors may wrap response details.
-		r.logger.Error("Collection failed", "check", e.check.Name(), "code", e.failure)
-		return
-	}
-	e.collections, e.sampledAt, e.failure = collections, now, ""
-	e.mu.Unlock()
-	items, unhealthy := 0, 0
-	for _, c := range collections {
-		aggregate := c.Aggregate(result.OK, now, now)
-		r.observeCollection(c.Route, aggregate.Healthy)
-		r.transition(e, "/v1/"+c.Route, aggregate.Summary)
-		for target, summary := range aggregate.Items {
-			items++
-			if summary != result.OK {
-				unhealthy++
-			}
-			r.transition(e, "/v1/"+c.Route+"/"+target, summary)
-		}
-	}
-	r.logger.Info("Sample published", "check", e.check.Name(), "items", items, "unhealthy", unhealthy)
+	return http.StatusNotFound, map[string]string{"reason": "unknown route"}
 }
 
-// transition logs a route whose verdict changed. Summaries hold only reason codes.
-func (r *Runner) transition(e *entry, route, summary string) {
-	if previous, ok := e.summaries[route]; ok && previous == summary {
-		return
+// Index lists every route with its verdict. Its own health reflects only the
+// process: API reachability and whether every check is still sampling.
+func (r *Runner) Index(now time.Time) (int, Index) {
+	routes := map[string]string{}
+	unhealthy := 0
+	var stalled []string
+	names := make([]string, 0, len(r.entries))
+	for _, e := range r.entries {
+		names = append(names, e.check.Name())
+		e.mu.RLock()
+		status, sampled := e.status(now)
+		if e.attemptedAt.IsZero() || now.Sub(e.attemptedAt) > e.timing.MaxAge {
+			stalled = append(stalled, e.check.Name())
+		}
+		for _, d := range e.described {
+			c := e.collection(d)
+			aggregate := c.Aggregate(status, sampled, now)
+			routes["/v1/"+c.Route] = aggregate.Summary
+			if !aggregate.Healthy {
+				unhealthy++
+			}
+			for target, summary := range aggregate.Items {
+				routes["/v1/"+c.Route+"/"+target] = summary
+			}
+		}
+		e.mu.RUnlock()
 	}
-	e.summaries[route] = summary
-	if summary == result.OK {
-		r.logger.Info("Route healthy", "route", route)
-	} else {
-		r.logger.Warn("Route unhealthy", "route", route, "summary", summary)
+	results := map[string]string{"apiserver": r.apiserver(now), "sample_fresh": result.OK}
+	if len(stalled) > 0 {
+		sort.Strings(stalled)
+		results["sample_fresh"] = result.Reason("stale") + ": " + strings.Join(stalled, ", ")
 	}
+	healthy := result.Healthy(results["apiserver"]) && result.Healthy(results["sample_fresh"])
+	at := now.UTC()
+	envelope := result.Envelope{
+		Check:      "argus",
+		Healthy:    healthy,
+		ObservedAt: &at,
+		Summary:    result.Summarize(results, []string{"apiserver", "sample_fresh"}),
+		Results:    results,
+		Values: map[string]any{
+			"version":              r.version,
+			"checks":               names,
+			"routes":               len(routes),
+			"unhealthyCollections": unhealthy,
+		},
+	}
+	return httpStatus(healthy), Index{Envelope: envelope, Routes: routes}
 }
 
 // status is the collection result for an entry at now.
@@ -232,7 +245,11 @@ func (e *entry) status(now time.Time) (string, time.Time) {
 	}
 	age := now.Sub(e.sampledAt)
 	if age < -time.Minute || age > e.timing.MaxAge {
-		return result.Reason("stale", result.Labeled("age", result.Dur(age.Seconds())), result.Labeled("max", result.Dur(e.timing.MaxAge.Seconds()))), e.sampledAt
+		return result.Reason(
+			"stale",
+			result.Labeled("age", result.Dur(age.Seconds())),
+			result.Labeled("max", result.Dur(e.timing.MaxAge.Seconds())),
+		), e.sampledAt
 	}
 	return result.OK, e.sampledAt
 }
@@ -282,25 +299,116 @@ func findCollection(collections []result.Collection, route string) (result.Colle
 	return result.Collection{}, false
 }
 
-// Lookup renders /v1/<path>, where path is a collection route or a route
-// followed by an item target.
-func (r *Runner) Lookup(path string, now time.Time) (int, any) {
+// Envelopes renders every aggregate of the named check.
+func (r *Runner) Envelopes(name string, now time.Time) []result.Envelope {
+	var out []result.Envelope
 	for _, e := range r.entries {
+		if e.check.Name() != name {
+			continue
+		}
 		e.mu.RLock()
-		code, body, found := r.lookupEntry(e, path, now)
+		status, sampled := e.status(now)
+		for _, d := range e.described {
+			out = append(out, e.collection(d).Aggregate(status, sampled, now))
+		}
 		e.mu.RUnlock()
-		if found {
-			return code, body
+	}
+	return out
+}
+
+func (r *Runner) refreshEntry(ctx context.Context, e *entry) {
+	e.refresh.Lock()
+	defer e.refresh.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, e.timing.Timeout)
+	defer cancel()
+	now := time.Now()
+	collections, err := e.check.Collect(ctx, time.Now)
+	completedAt := time.Now()
+	if err == nil {
+		err = ctx.Err()
+		deadline, _ := ctx.Deadline()
+		if err == nil && !completedAt.Before(deadline) {
+			err = context.DeadlineExceeded
 		}
 	}
-	return http.StatusNotFound, map[string]string{"reason": "unknown route"}
+	e.mu.Lock()
+	e.attemptedAt = completedAt
+	if err != nil {
+		e.failure = Code(err)
+		e.mu.Unlock()
+		r.observeFailure(e.described)
+		// Only the fixed code is logged: errors may wrap response details.
+		r.logger.ErrorContext(
+			ctx,
+			"Collection failed",
+			slog.String("check", e.check.Name()),
+			slog.String("code", e.failure),
+		)
+		return
+	}
+	e.collections, e.sampledAt, e.failure = collections, now, ""
+	e.mu.Unlock()
+	items, unhealthy := 0, 0
+	for _, c := range collections {
+		aggregate := c.Aggregate(result.OK, now, now)
+		r.observeCollection(c.Route, aggregate.Healthy)
+		r.transition(e, "/v1/"+c.Route, aggregate.Summary)
+		for target, summary := range aggregate.Items {
+			items++
+			if summary != result.OK {
+				unhealthy++
+			}
+			r.transition(e, "/v1/"+c.Route+"/"+target, summary)
+		}
+	}
+	r.logger.InfoContext(ctx,
+		"Sample published",
+		slog.String("check", e.check.Name()),
+		slog.Int("items", items),
+		slog.Int("unhealthy", unhealthy),
+	)
+}
+
+func httpStatus(healthy bool) int {
+	if healthy {
+		return http.StatusOK
+	}
+	return http.StatusServiceUnavailable
+}
+
+// Index is the /v1/checks body: every route and its verdict, plus the
+// process-level apiserver and sample_fresh results.
+type Index struct {
+	result.Envelope
+
+	Routes map[string]string `json:"routes"`
+}
+
+// transition logs a route whose verdict changed. Summaries hold only reason codes.
+func (r *Runner) transition(e *entry, route, summary string) {
+	if previous, ok := e.summaries[route]; ok && previous == summary {
+		return
+	}
+	e.summaries[route] = summary
+	if summary == result.OK {
+		r.logger.Info("Route healthy", slog.String("route", route))
+	} else {
+		r.logger.Warn(
+			"Route unhealthy",
+			slog.String("route", route),
+			slog.String("summary", summary),
+		)
+	}
 }
 
 func (r *Runner) lookupEntry(e *entry, path string, now time.Time) (int, any, bool) {
 	status, sampled := e.status(now)
 	// Longest route first, so a target never shadows a deeper route.
 	described := append([]result.Collection(nil), e.described...)
-	sort.Slice(described, func(i, j int) bool { return len(described[i].Route) > len(described[j].Route) })
+	sort.Slice(
+		described,
+		func(i, j int) bool { return len(described[i].Route) > len(described[j].Route) },
+	)
 	for _, d := range described {
 		c := e.collection(d)
 		if path == d.Route {
@@ -332,59 +440,6 @@ func (r *Runner) lookupEntry(e *entry, path string, now time.Time) (int, any, bo
 	return 0, nil, false
 }
 
-func httpStatus(healthy bool) int {
-	if healthy {
-		return http.StatusOK
-	}
-	return http.StatusServiceUnavailable
-}
-
-// Index is the /v1/checks body: every route and its verdict, plus the
-// process-level apiserver and sample_fresh results.
-type Index struct {
-	result.Envelope
-	Routes map[string]string `json:"routes"`
-}
-
-// Index lists every route with its verdict. Its own health reflects only the
-// process: API reachability and whether every check is still sampling.
-func (r *Runner) Index(now time.Time) (int, Index) {
-	routes := map[string]string{}
-	unhealthy := 0
-	var stalled []string
-	names := make([]string, 0, len(r.entries))
-	for _, e := range r.entries {
-		names = append(names, e.check.Name())
-		e.mu.RLock()
-		status, sampled := e.status(now)
-		if e.attemptedAt.IsZero() || now.Sub(e.attemptedAt) > e.timing.MaxAge {
-			stalled = append(stalled, e.check.Name())
-		}
-		for _, d := range e.described {
-			c := e.collection(d)
-			aggregate := c.Aggregate(status, sampled, now)
-			routes["/v1/"+c.Route] = aggregate.Summary
-			if !aggregate.Healthy {
-				unhealthy++
-			}
-			for target, summary := range aggregate.Items {
-				routes["/v1/"+c.Route+"/"+target] = summary
-			}
-		}
-		e.mu.RUnlock()
-	}
-	results := map[string]string{"apiserver": r.apiserver(now), "sample_fresh": result.OK}
-	if len(stalled) > 0 {
-		sort.Strings(stalled)
-		results["sample_fresh"] = result.Reason("stale") + ": " + strings.Join(stalled, ", ")
-	}
-	healthy := result.Healthy(results["apiserver"]) && result.Healthy(results["sample_fresh"])
-	at := now.UTC()
-	envelope := result.Envelope{Check: "argus", Healthy: healthy, ObservedAt: &at, Summary: result.Summarize(results, []string{"apiserver", "sample_fresh"}),
-		Results: results, Values: map[string]any{"version": r.version, "checks": names, "routes": len(routes), "unhealthyCollections": unhealthy}}
-	return httpStatus(healthy), Index{Envelope: envelope, Routes: routes}
-}
-
 func (r *Runner) apiserver(now time.Time) string {
 	if r.api == nil {
 		return result.NA
@@ -410,21 +465,4 @@ func (r *Runner) apiserver(now time.Time) string {
 		return result.Pending
 	}
 	return result.Reason("stale")
-}
-
-// Envelopes renders every aggregate of the named check.
-func (r *Runner) Envelopes(name string, now time.Time) []result.Envelope {
-	var out []result.Envelope
-	for _, e := range r.entries {
-		if e.check.Name() != name {
-			continue
-		}
-		e.mu.RLock()
-		status, sampled := e.status(now)
-		for _, d := range e.described {
-			out = append(out, e.collection(d).Aggregate(status, sampled, now))
-		}
-		e.mu.RUnlock()
-	}
-	return out
 }

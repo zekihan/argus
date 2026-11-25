@@ -23,7 +23,10 @@ func parse(t *testing.T, json string) config.Config {
 const dohJSON = `{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"example.com","expectedIPv4":"192.0.2.1","intervalSeconds":120,"collectionTimeoutSeconds":30,"maxSampleAgeSeconds":600}}}`
 
 func TestBuildConstructsEnabledChecksInOrderWithTiming(t *testing.T) {
-	cfg := parse(t, `{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"example.com","expectedIPv4":"192.0.2.1","intervalSeconds":120,"collectionTimeoutSeconds":30,"maxSampleAgeSeconds":600},"hosts":{"privateKeyFile":"/tmp/key","knownHostsFile":"/tmp/known","hosts":[{"name":"bastion","address":"192.0.2.10"}]}}}`)
+	cfg := parse(
+		t,
+		`{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"example.com","expectedIPv4":"192.0.2.1","intervalSeconds":120,"collectionTimeoutSeconds":30,"maxSampleAgeSeconds":600},"hosts":{"privateKeyFile":"/tmp/key","knownHostsFile":"/tmp/known","hosts":[{"name":"bastion","address":"192.0.2.10"}]}}}`,
+	)
 	built, err := Build(cfg, Deps{Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +111,12 @@ func TestBuildWiresEveryEnabledCheck(t *testing.T) {
 	}
 	for i, want := range enabled {
 		if built[i].Check.Name() != want.Name || len(built[i].Check.Describe()) == 0 {
-			t.Fatalf("check %d = %q, want %q with a description", i, built[i].Check.Name(), want.Name)
+			t.Fatalf(
+				"check %d = %q, want %q with a description",
+				i,
+				built[i].Check.Name(),
+				want.Name,
+			)
 		}
 	}
 }

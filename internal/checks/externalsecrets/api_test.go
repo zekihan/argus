@@ -19,21 +19,24 @@ func TestAPICollectStopsOnTheFailingResource(t *testing.T) {
 	const base = "/apis/external-secrets.io/v1/"
 	for _, failAt := range []string{base + "externalsecrets", base + "clustersecretstores", base + "secretstores", base + "clusterexternalsecrets"} {
 		t.Run(failAt, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == failAt {
-					w.WriteHeader(http.StatusForbidden)
-					_, _ = io.WriteString(w, secret)
-					return
-				}
-				_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"1"},"items":[]}`)
-			}))
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == failAt {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = io.WriteString(w, secret)
+						return
+					}
+					_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"1"},"items":[]}`)
+				}),
+			)
 			defer server.Close()
 			client, err := kube.New(server.URL, "", "", "test", time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, err = (API{Client: client}).Collect(t.Context())
-			if err == nil || kube.CodeOf(err) != kube.CodeForbidden || strings.Contains(err.Error(), secret) {
+			if err == nil || kube.CodeOf(err) != kube.CodeForbidden ||
+				strings.Contains(err.Error(), secret) {
 				t.Fatal(err)
 			}
 		})

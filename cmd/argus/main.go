@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zekihan/go-commons/metrics"
+
 	"github.com/zekihan/argus/internal/checks"
 	"github.com/zekihan/argus/internal/config"
 	"github.com/zekihan/argus/internal/kube"
@@ -24,7 +26,6 @@ import (
 	"github.com/zekihan/argus/internal/runner"
 	"github.com/zekihan/argus/internal/server"
 	"github.com/zekihan/argus/internal/state"
-	"github.com/zekihan/go-commons/metrics"
 )
 
 var version = "dev"
@@ -48,7 +49,7 @@ func main() {
 		case errors.Is(err, flag.ErrHelp):
 			code = 2
 		default:
-			logger.Error("Argus stopped", "error", err.Error())
+			logger.Error("Argus stopped", slog.String("error", err.Error()))
 			code = 2
 		}
 	}
@@ -97,9 +98,21 @@ type apiFlags struct {
 
 func addAPIFlags(fs *flag.FlagSet) apiFlags {
 	return apiFlags{
-		url:       fs.String("api-url", "", "Kubernetes HTTPS origin, or a loopback kubectl proxy such as http://127.0.0.1:8001; defaults to the in-cluster environment"),
-		tokenFile: fs.String("token-file", "/var/run/secrets/kubernetes.io/serviceaccount/token", "Projected service-account token"),
-		caFile:    fs.String("ca-file", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "Kubernetes CA bundle"),
+		url: fs.String(
+			"api-url",
+			"",
+			"Kubernetes HTTPS origin, or a loopback kubectl proxy such as http://127.0.0.1:8001; defaults to the in-cluster environment",
+		),
+		tokenFile: fs.String(
+			"token-file",
+			"/var/run/secrets/kubernetes.io/serviceaccount/token",
+			"Projected service-account token",
+		),
+		caFile: fs.String(
+			"ca-file",
+			"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+			"Kubernetes CA bundle",
+		),
 	}
 }
 
@@ -108,17 +121,89 @@ func (f apiFlags) client(timeout time.Duration) (*kube.Client, error) {
 	if origin == "" {
 		host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 		if host == "" || port == "" {
-			return nil, fmt.Errorf("set -api-url or the in-cluster Kubernetes service environment")
+			return nil, errors.New("set -api-url or the in-cluster Kubernetes service environment")
 		}
 		origin = "https://" + net.JoinHostPort(host, port)
 	}
 	return kube.New(origin, *f.tokenFile, *f.caFile, version, timeout)
 }
 
+// buildRunner assembles the check runner with its metrics and prober.
+func buildRunner(
+	cfg config.Config,
+	client *kube.Client,
+	logger *slog.Logger,
+	reg *metrics.Registry,
+) (*runner.Runner, error) {
+	var health runner.HealthSource
+	if client != nil {
+		health = client
+	}
+	built, err := checks.Build(cfg, checks.Deps{API: client, Logger: logger, Metrics: reg})
+	if err != nil {
+		return nil, err
+	}
+	r := runner.New(logger, version, health, time.Duration(cfg.MaxSampleAgeSeconds)*time.Second)
+	if reg != nil {
+		r.SetMetrics(reg)
+	}
+	if client != nil {
+		r.ProbeEvery(
+			client,
+			time.Duration(cfg.PollIntervalSeconds)*time.Second,
+			time.Duration(cfg.RequestTimeoutSeconds)*time.Second,
+		)
+	}
+	for _, b := range built {
+		r.Add(b.Check, b.Timing)
+	}
+	return r, nil
+}
+
+// listenOn binds the main listener.
+func listenOn(addr string) (net.Listener, error) {
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("cannot listen on %s", addr)
+	}
+	return listener, nil
+}
+
+// metricsListenerFor creates the internal metrics listener, if enabled.
+func metricsListenerFor(
+	cfg config.Config,
+	reg *metrics.Registry,
+) (net.Listener, *http.Server, error) {
+	if reg == nil {
+		return nil, nil, nil
+	}
+	listener, err := (&net.ListenConfig{}).Listen(
+		context.Background(),
+		"tcp",
+		cfg.MetricsAddress,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot listen on metrics %s", cfg.MetricsAddress)
+	}
+	return listener, reg.Server(cfg.MetricsAddress), nil
+}
+
+// serveMetrics serves the internal metrics endpoint until shutdown.
+func serveMetrics(srv *http.Server, listener net.Listener, logger *slog.Logger) {
+	if serr := srv.Serve(listener); serr != nil &&
+		!errors.Is(serr, http.ErrServerClosed) {
+		logger.Error("Metrics server failed", slog.String("error", serr.Error()))
+	}
+}
+
 func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	configFile := fs.String("config", "/config/config.json", "Strict JSON configuration file")
-	checkConfig := fs.Bool("check-config", false, "Validate configuration and exit without contacting Kubernetes")
+	checkConfig := fs.Bool(
+		"check-config",
+		false,
+		"Validate configuration and exit without contacting Kubernetes",
+	)
 	api := addAPIFlags(fs)
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
@@ -132,73 +217,74 @@ func serve(args []string, stdout io.Writer, logger *slog.Logger) error {
 		return err
 	}
 	var client *kube.Client
-	var health runner.HealthSource
 	if checks.Kubernetes(cfg) {
-		if client, err = api.client(time.Duration(cfg.RequestTimeoutSeconds) * time.Second); err != nil {
+		if client, err = api.client(
+			time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+		); err != nil {
 			return err
 		}
 		defer client.HTTP.CloseIdleConnections()
-		health = client
 	}
 	var reg *metrics.Registry
 	if cfg.MetricsAddress != "" {
 		reg = metrics.New()
 	}
-	built, err := checks.Build(cfg, checks.Deps{API: client, Logger: logger, Metrics: reg})
+	r, err := buildRunner(cfg, client, logger, reg)
 	if err != nil {
 		return err
 	}
-	r := runner.New(logger, version, health, time.Duration(cfg.MaxSampleAgeSeconds)*time.Second)
-	if reg != nil {
-		r.SetMetrics(reg)
-	}
-	if client != nil {
-		r.ProbeEvery(client, time.Duration(cfg.PollIntervalSeconds)*time.Second, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
-	}
-	for _, b := range built {
-		r.Add(b.Check, b.Timing)
-	}
 	var certificates *server.Reloader
 	if cfg.TLS != nil {
-		if certificates, err = server.NewReloader(cfg.TLS.CertFile, cfg.TLS.KeyFile, 30*time.Second, logger); err != nil {
+		if certificates, err = server.NewReloader(
+			cfg.TLS.CertFile,
+			cfg.TLS.KeyFile,
+			30*time.Second,
+			logger,
+		); err != nil {
 			return err
 		}
 	}
-	listener, err := net.Listen("tcp", cfg.ListenAddress)
+	listener, err := listenOn(cfg.ListenAddress)
 	if err != nil {
-		return fmt.Errorf("cannot listen on %s", cfg.ListenAddress)
+		return err
 	}
 	// Metrics ride a separate internal listener that is never routed through
 	// the public ingress. An empty metricsAddress disables them.
-	var metricsListener net.Listener
-	var metricsSrv *http.Server
-	if reg != nil {
-		if metricsListener, err = net.Listen("tcp", cfg.MetricsAddress); err != nil {
-			return fmt.Errorf("cannot listen on metrics %s", cfg.MetricsAddress)
-		}
-		metricsSrv = reg.Server(cfg.MetricsAddress)
+	metricsListener, metricsSrv, err := metricsListenerFor(cfg, reg)
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if metricsSrv != nil {
-		go func() {
-			if serr := metricsSrv.Serve(metricsListener); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
-				logger.Error("Metrics server failed", "error", serr.Error())
-			}
-		}()
+		go serveMetrics(metricsSrv, metricsListener, logger)
 	}
-	names := make([]string, 0, len(built))
-	for _, b := range built {
-		names = append(names, b.Check.Name())
+	enabled := cfg.Enabled()
+	names := make([]string, 0, len(enabled))
+	for _, e := range enabled {
+		names = append(names, e.Name)
 	}
-	logger.Info("Starting argus", "version", version, "checks", names, "address", cfg.ListenAddress, "metrics", cfg.MetricsAddress, "tls", cfg.TLS != nil)
+	logger.Info(
+		"Starting argus",
+		slog.String("version", version),
+		slog.Any("checks", names),
+		slog.String("address", cfg.ListenAddress),
+		slog.String("metrics", cfg.MetricsAddress),
+		slog.Bool("tls", cfg.TLS != nil),
+	)
 	err = server.Serve(ctx, listener, r.Run, r, cfg.TokenFile, certificates, logger, reg)
-	if metricsSrv != nil {
-		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer drainCancel()
-		if shutdownErr := metricsSrv.Shutdown(drainCtx); shutdownErr != nil {
-			err = errors.Join(err, shutdownErr)
-		}
+	return drainMetrics(metricsSrv, err)
+}
+
+// drainMetrics gracefully shuts down the metrics listener and joins errors.
+func drainMetrics(metricsSrv *http.Server, err error) error {
+	if metricsSrv == nil {
+		return err
+	}
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	if shutdownErr := metricsSrv.Shutdown(drainCtx); shutdownErr != nil {
+		err = errors.Join(err, shutdownErr)
 	}
 	return err
 }
@@ -207,19 +293,23 @@ func once(args []string, stdout io.Writer, logger *slog.Logger) error {
 	fs := flag.NewFlagSet("once", flag.ContinueOnError)
 	configFile := fs.String("config", "/config/config.json", "Strict JSON configuration file")
 	name := fs.String("check", "", "Check to run: a configured check name, or pki-lifecycle")
-	snapshot := fs.String("snapshot", "", "pki-lifecycle only: offline CertificateList JSON (kubectl get certificates -A -o json)")
+	snapshot := fs.String(
+		"snapshot",
+		"",
+		"pki-lifecycle only: offline CertificateList JSON (kubectl get certificates -A -o json)",
+	)
 	api := addAPIFlags(fs)
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if *name == "" {
-		return fmt.Errorf("once requires -check")
+		return errors.New("once requires -check")
 	}
 	if *name == "pki-lifecycle" {
 		return pkiLifecycle(*snapshot, api, stdout)
 	}
 	if *snapshot != "" {
-		return fmt.Errorf("-snapshot applies only to pki-lifecycle")
+		return errors.New("-snapshot applies only to pki-lifecycle")
 	}
 	cfg, err := config.Load(*configFile)
 	if err != nil {
@@ -237,12 +327,14 @@ func once(args []string, stdout io.Writer, logger *slog.Logger) error {
 	cfg.Checks = onlyCheck(cfg.Checks, *name)
 	var client *kube.Client
 	if checks.Kubernetes(cfg) {
-		if client, err = api.client(time.Duration(cfg.RequestTimeoutSeconds) * time.Second); err != nil {
+		if client, err = api.client(
+			time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+		); err != nil {
 			return err
 		}
 		defer client.HTTP.CloseIdleConnections()
 	}
-	quiet := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	quiet := slog.New(slog.DiscardHandler)
 	built, err := checks.Build(cfg, checks.Deps{API: client, Logger: logger, ReadOnly: true})
 	if err != nil {
 		return err
@@ -252,19 +344,7 @@ func once(args []string, stdout io.Writer, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	r.Refresh(ctx, *name)
-	envelopes := r.Envelopes(*name, time.Now())
-	healthy := true
-	for _, e := range envelopes {
-		healthy = healthy && e.Healthy
-	}
-	var output any = envelopes[0]
-	if len(envelopes) > 1 {
-		output = struct {
-			Check       string            `json:"check"`
-			Healthy     bool              `json:"healthy"`
-			Collections []result.Envelope `json:"collections"`
-		}{*name, healthy, envelopes}
-	}
+	healthy, output := checkOutput(r.Envelopes(*name, time.Now()), *name)
 	if err := printJSON(stdout, output); err != nil {
 		return err
 	}
@@ -272,6 +352,23 @@ func once(args []string, stdout io.Writer, logger *slog.Logger) error {
 		return errUnhealthy
 	}
 	return nil
+}
+
+// checkOutput reports whether every envelope is healthy and folds a
+// multi-envelope result into one document.
+func checkOutput(envelopes []result.Envelope, name string) (bool, any) {
+	healthy := true
+	for _, e := range envelopes {
+		healthy = healthy && e.Healthy
+	}
+	if len(envelopes) == 1 {
+		return healthy, envelopes[0]
+	}
+	return healthy, struct {
+		Check       string            `json:"check"`
+		Healthy     bool              `json:"healthy"`
+		Collections []result.Envelope `json:"collections"`
+	}{name, healthy, envelopes}
 }
 
 func onlyCheck(all config.Checks, name string) config.Checks {
@@ -315,12 +412,16 @@ func printJSON(stdout io.Writer, value any) error {
 
 func validateState(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("state validate", flag.ContinueOnError)
-	file := fs.String("file", "", "Exported ledger (backrestwatch evidence.json) to validate before import")
+	file := fs.String(
+		"file",
+		"",
+		"Exported ledger (backrestwatch evidence.json) to validate before import",
+	)
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if *file == "" {
-		return fmt.Errorf("state validate requires -file")
+		return errors.New("state validate requires -file")
 	}
 	ledger, err := state.ValidateFile(*file)
 	if err != nil {
@@ -330,6 +431,12 @@ func validateState(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "Ledger is valid: %d entries, %d bytes as a version 2 document (limit %d)\n", len(ledger), len(data), state.MaxBytes)
+	_, err = fmt.Fprintf(
+		stdout,
+		"Ledger is valid: %d entries, %d bytes as a version 2 document (limit %d)\n",
+		len(ledger),
+		len(data),
+		state.MaxBytes,
+	)
 	return err
 }

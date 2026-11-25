@@ -18,6 +18,7 @@ import (
 // timestamps of the Python tests they port.
 type fixed struct {
 	runner.Check
+
 	now time.Time
 }
 
@@ -40,7 +41,14 @@ func New(check runner.Check, now time.Time) *Harness {
 	if !now.IsZero() {
 		check = fixed{Check: check, now: now}
 	}
-	r.Add(check, runner.Timing{Interval: time.Minute, Timeout: 10 * time.Second, MaxAge: 24 * 365 * time.Hour})
+	r.Add(
+		check,
+		runner.Timing{
+			Interval: time.Minute,
+			Timeout:  10 * time.Second,
+			MaxAge:   24 * 365 * time.Hour,
+		},
+	)
 	return &Harness{Runner: r, Logs: logs, name: check.Name()}
 }
 
@@ -79,11 +87,17 @@ func (h *Harness) NoLeak(t *testing.T, secrets ...string) {
 	t.Helper()
 	var all strings.Builder
 	_, index := h.Runner.Index(time.Now())
-	data, _ := json.Marshal(index)
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
 	all.Write(data)
 	for route := range index.Routes {
 		_, body := h.Runner.Lookup(strings.TrimPrefix(route, "/v1/"), time.Now())
-		data, _ := json.Marshal(body)
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
 		all.Write(data)
 	}
 	all.WriteString(h.Logs.String())
