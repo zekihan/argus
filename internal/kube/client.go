@@ -5,13 +5,15 @@ package kube
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
+	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,7 +34,7 @@ const (
 	CodeTimeout      = "timeout"
 	CodeInvalid      = "invalid_response"
 	CodeBudget       = "over_budget"
-	CodeToken        = "token_unavailable"
+	CodeToken        = "token_unavailable" //nolint:gosec // Response reason code, not a credential.
 	CodeClient       = "client_error"
 )
 
@@ -79,7 +81,7 @@ type Client struct {
 
 	mu     sync.Mutex
 	health Health
-	// paths holds the latest permission outcome per resource path.
+	// Paths holds the latest permission outcome per resource path.
 	paths map[string]outcome
 }
 
@@ -109,7 +111,9 @@ type outcome struct {
 // local `kubectl proxy`. Only such an origin may skip TLS and the token.
 func Loopback(origin string) bool {
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.Port() == "" {
+	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+		(u.Path != "" && u.Path != "/") ||
+		u.Port() == "" {
 		return false
 	}
 	host := u.Hostname()
@@ -125,26 +129,39 @@ func Loopback(origin string) bool {
 // which carries no credentials.
 func New(base, tokenFile, caFile, version string, timeout time.Duration) (*Client, error) {
 	transport := &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext,
-		TLSHandshakeTimeout: timeout, ResponseHeaderTimeout: timeout, IdleConnTimeout: 90 * time.Second,
-		MaxIdleConnsPerHost: 4, MaxConnsPerHost: 4}
-	client := &Client{BaseURL: strings.TrimRight(base, "/"), UserAgent: "argus/" + version,
-		HTTP: &http.Client{Transport: transport, Timeout: timeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+		DialContext:           (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConnsPerHost:   4,
+		MaxConnsPerHost:       4,
+	}
+	client := &Client{
+		BaseURL: strings.TrimRight(base, "/"), UserAgent: "argus/" + version,
+		HTTP: &http.Client{
+			Transport:     transport,
+			Timeout:       timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+	}
 	if Loopback(base) {
 		return client, nil
 	}
 	u, err := url.Parse(base)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return nil, fmt.Errorf("kubernetes API URL must be an HTTPS origin or a plain-HTTP loopback origin")
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" ||
+		u.Fragment != "" ||
+		(u.Path != "" && u.Path != "/") {
+		return nil, errors.New(
+			"kubernetes API URL must be an HTTPS origin or a plain-HTTP loopback origin",
+		)
 	}
 	ca, err := os.ReadFile(caFile)
 	if err != nil {
-		return nil, fmt.Errorf("read Kubernetes CA file")
+		return nil, errors.New("read Kubernetes CA file")
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(ca) {
-		return nil, fmt.Errorf("kubernetes CA file contains no certificates")
+		return nil, errors.New("kubernetes CA file contains no certificates")
 	}
 	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	client.TokenFile = tokenFile
@@ -188,38 +205,10 @@ func coreAPI(path string) bool {
 // authenticated (or anonymous) client may read.
 func resourcePath(path string) bool { return path != "/api" && path != "/version" }
 
-func (c *Client) record(path string, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.paths == nil {
-		c.paths = map[string]outcome{}
-	}
-	now := time.Now()
-	if err == nil {
-		c.health.LastSuccess = now
-		if resourcePath(path) {
-			c.paths[path] = outcome{ok: true, at: now}
-		}
-		return
-	}
-	var kerr *Error
-	if !errors.As(err, &kerr) {
-		return
-	}
-	switch kerr.Code {
-	case CodeClient, CodeConflict:
-		// A canceled collection or a lost precondition says nothing about the API.
-	case CodeForbidden, CodeNotFound:
-		if resourcePath(path) {
-			c.paths[path] = outcome{ok: false, at: now}
-		}
-	case CodeToken, CodeUnauthorized, CodeUnreachable:
-		c.health.LastFailure, c.health.FailureCode = now, kerr.Code
-	default:
-		if coreAPI(path) {
-			c.health.LastFailure, c.health.FailureCode = now, kerr.Code
-		}
-	}
+// Get decodes one object.
+func (c *Client) Get(ctx context.Context, path string, out any) error {
+	_, err := c.page(ctx, path, nil, func(data []byte) error { return json.Unmarshal(data, out) })
+	return err
 }
 
 // maxListBytes bounds one list across all of its pages, as sync_monitor.py did.
@@ -274,94 +263,79 @@ func List[T any](ctx context.Context, c *Client, path, selector string) ([]T, er
 	return nil, &Error{Code: CodeBudget, Path: path}
 }
 
-// Get decodes one object.
-func (c *Client) Get(ctx context.Context, path string, out any) error {
-	_, err := c.page(ctx, path, nil, func(data []byte) error { return json.Unmarshal(data, out) })
-	return err
+// GetConfigMap reads one ConfigMap with its resourceVersion.
+func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (ConfigMap, error) {
+	path := configMapPath(namespace, name)
+	data, err := c.page(ctx, path, nil, nil)
+	if err != nil {
+		return ConfigMap{}, err
+	}
+	return decodeConfigMap(path, data)
 }
 
-func (c *Client) page(ctx context.Context, path string, query url.Values, decode func([]byte) error) ([]byte, error) {
-	for attempt := range 3 {
-		data, retry, err := c.request(ctx, http.MethodGet, path, query, nil, decode)
-		if err == nil || !retry || attempt == 2 {
-			return data, err
-		}
-		delay := (100 * time.Millisecond << attempt) + time.Duration(rand.IntN(100))*time.Millisecond
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, &Error{Code: CodeTimeout, Path: path}
-		case <-timer.C:
-		}
+// UpdateConfigMap replaces data with a PUT conditional on the resourceVersion
+// read by GetConfigMap. A concurrent change returns a conflict error. It is
+// never retried here: callers re-read and converge.
+func (c *Client) UpdateConfigMap(
+	ctx context.Context,
+	namespace, name string,
+	current ConfigMap,
+	data map[string]string,
+) (ConfigMap, error) {
+	path := configMapPath(namespace, name)
+	if current.raw == nil || current.ResourceVersion == "" {
+		return ConfigMap{}, &Error{Code: CodeClient, Path: path}
 	}
-	return nil, &Error{Code: CodeUnreachable, Path: path}
+	object := make(map[string]json.RawMessage, len(current.raw))
+	maps.Copy(object, current.raw)
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return ConfigMap{}, &Error{Code: CodeClient, Path: path}
+	}
+	object["data"] = encoded
+	body, err := json.Marshal(object)
+	if err != nil {
+		return ConfigMap{}, &Error{Code: CodeClient, Path: path}
+	}
+	response, _, err := c.request(ctx, http.MethodPut, path, nil, body, nil)
+	if err != nil {
+		return ConfigMap{}, err
+	}
+	return decodeConfigMap(path, response)
 }
 
-func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte, decode func([]byte) error) (data []byte, retry bool, err error) {
-	defer func() { c.record(path, err) }()
-	target := c.BaseURL + path
-	if len(query) > 0 {
-		target += "?" + query.Encode()
+func (c *Client) record(path string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.paths == nil {
+		c.paths = map[string]outcome{}
 	}
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, reader)
-	if err != nil {
-		return nil, false, &Error{Code: CodeClient, Path: path}
-	}
-	if c.TokenFile != "" {
-		// Projected service-account tokens rotate independently of the process.
-		token, err := os.ReadFile(c.TokenFile)
-		if err != nil || strings.TrimSpace(string(token)) == "" {
-			return nil, false, &Error{Code: CodeToken, Path: path}
+	now := time.Now()
+	if err == nil {
+		c.health.LastSuccess = now
+		if resourcePath(path) {
+			c.paths[path] = outcome{ok: true, at: now}
 		}
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+		return
 	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", c.UserAgent)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	var kerr *Error
+	if !errors.As(err, &kerr) {
+		return
 	}
-	response, err := c.HTTP.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, false, &Error{Code: CodeTimeout, Path: path}
+	switch kerr.Code {
+	case CodeClient, CodeConflict:
+		// A canceled collection or a lost precondition says nothing about the API.
+	case CodeForbidden, CodeNotFound:
+		if resourcePath(path) {
+			c.paths[path] = outcome{ok: false, at: now}
 		}
-		return nil, true, transportError(path, err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		retry := response.StatusCode == 429 || response.StatusCode >= 500 || response.StatusCode == 401
-		code := CodeHTTP
-		switch response.StatusCode {
-		case http.StatusForbidden:
-			code = CodeForbidden
-		case http.StatusUnauthorized:
-			code = CodeUnauthorized
-		case http.StatusNotFound:
-			code = CodeNotFound
-		case http.StatusConflict:
-			code = CodeConflict
+	case CodeToken, CodeUnauthorized, CodeUnreachable:
+		c.health.LastFailure, c.health.FailureCode = now, kerr.Code
+	default:
+		if coreAPI(path) {
+			c.health.LastFailure, c.health.FailureCode = now, kerr.Code
 		}
-		return nil, retry, &Error{Code: code, Status: response.StatusCode, Path: path}
 	}
-	data, err = io.ReadAll(io.LimitReader(response.Body, 16*1024*1024+1))
-	if ctx.Err() != nil {
-		return nil, false, &Error{Code: CodeTimeout, Path: path}
-	}
-	if len(data) > 16*1024*1024 {
-		return nil, false, &Error{Code: CodeBudget, Path: path}
-	}
-	if err != nil {
-		return nil, ctx.Err() == nil, transportError(path, err)
-	}
-	if decode != nil && decode(data) != nil {
-		return nil, false, &Error{Code: CodeInvalid, Path: path}
-	}
-	return data, false, nil
 }
 
 func transportError(path string, err error) *Error {
@@ -392,46 +366,142 @@ func decodeConfigMap(path string, data []byte) (ConfigMap, error) {
 		} `json:"metadata"`
 		Data map[string]string `json:"data"`
 	}
-	if json.Unmarshal(data, &raw) != nil || json.Unmarshal(data, &view) != nil || view.Metadata.ResourceVersion == "" {
+	if json.Unmarshal(data, &raw) != nil || json.Unmarshal(data, &view) != nil ||
+		view.Metadata.ResourceVersion == "" {
 		return ConfigMap{}, &Error{Code: CodeInvalid, Path: path}
 	}
 	return ConfigMap{Data: view.Data, ResourceVersion: view.Metadata.ResourceVersion, raw: raw}, nil
 }
 
-// GetConfigMap reads one ConfigMap with its resourceVersion.
-func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (ConfigMap, error) {
-	path := configMapPath(namespace, name)
-	data, err := c.page(ctx, path, nil, nil)
-	if err != nil {
-		return ConfigMap{}, err
+func (c *Client) page(
+	ctx context.Context,
+	path string,
+	query url.Values,
+	decode func([]byte) error,
+) ([]byte, error) {
+	for attempt := range 3 {
+		data, retry, err := c.request(ctx, http.MethodGet, path, query, nil, decode)
+		if err == nil || !retry || attempt == 2 {
+			return data, err
+		}
+		jitter, jitterErr := rand.Int(rand.Reader, big.NewInt(100))
+		if jitterErr != nil {
+			jitter = big.NewInt(0)
+		}
+		delay := (100 * time.Millisecond << attempt) + time.Duration(
+			jitter.Int64(),
+		)*time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, &Error{Code: CodeTimeout, Path: path}
+		case <-timer.C:
+		}
 	}
-	return decodeConfigMap(path, data)
+	return nil, &Error{Code: CodeUnreachable, Path: path}
 }
 
-// UpdateConfigMap replaces data with a PUT conditional on the resourceVersion
-// read by GetConfigMap. A concurrent change returns a conflict error. It is
-// never retried here: callers re-read and converge.
-func (c *Client) UpdateConfigMap(ctx context.Context, namespace, name string, current ConfigMap, data map[string]string) (ConfigMap, error) {
-	path := configMapPath(namespace, name)
-	if current.raw == nil || current.ResourceVersion == "" {
-		return ConfigMap{}, &Error{Code: CodeClient, Path: path}
+func (c *Client) request(
+	ctx context.Context,
+	method, path string,
+	query url.Values,
+	body []byte,
+	decode func([]byte) error,
+) ([]byte, bool, error) {
+	data, retry, err := c.doRequest(ctx, method, path, query, body, decode)
+	c.record(path, err)
+	return data, retry, err
+}
+
+// newRequest builds an API request, refreshing the projected token.
+func (c *Client) newRequest(
+	ctx context.Context,
+	method, path string,
+	query url.Values,
+	body []byte,
+) (*http.Request, error) {
+	target := c.BaseURL + path
+	if len(query) > 0 {
+		target += "?" + query.Encode()
 	}
-	object := make(map[string]json.RawMessage, len(current.raw))
-	for key, value := range current.raw {
-		object[key] = value
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
 	}
-	encoded, err := json.Marshal(data)
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
-		return ConfigMap{}, &Error{Code: CodeClient, Path: path}
+		return nil, &Error{Code: CodeClient, Path: path}
 	}
-	object["data"] = encoded
-	body, err := json.Marshal(object)
+	if c.TokenFile != "" {
+		// Projected service-account tokens rotate independently of the process.
+		token, err := os.ReadFile(c.TokenFile)
+		if err != nil || strings.TrimSpace(string(token)) == "" {
+			return nil, &Error{Code: CodeToken, Path: path}
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.UserAgent)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
+// statusError maps a failed response status to a retryable API error.
+func statusError(path string, status int) (bool, *Error) {
+	retry := status == http.StatusTooManyRequests || status >= 500 ||
+		status == http.StatusUnauthorized
+	code := CodeHTTP
+	switch status {
+	case http.StatusForbidden:
+		code = CodeForbidden
+	case http.StatusUnauthorized:
+		code = CodeUnauthorized
+	case http.StatusNotFound:
+		code = CodeNotFound
+	case http.StatusConflict:
+		code = CodeConflict
+	}
+	return retry, &Error{Code: code, Status: status, Path: path}
+}
+
+func (c *Client) doRequest(
+	ctx context.Context,
+	method, path string,
+	query url.Values,
+	body []byte,
+	decode func([]byte) error,
+) ([]byte, bool, error) {
+	req, err := c.newRequest(ctx, method, path, query, body)
 	if err != nil {
-		return ConfigMap{}, &Error{Code: CodeClient, Path: path}
+		return nil, false, err
 	}
-	response, _, err := c.request(ctx, http.MethodPut, path, nil, body, nil)
+	response, err := c.HTTP.Do(req)
 	if err != nil {
-		return ConfigMap{}, err
+		if ctx.Err() != nil {
+			return nil, false, &Error{Code: CodeTimeout, Path: path}
+		}
+		return nil, true, transportError(path, err)
 	}
-	return decodeConfigMap(path, response)
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		retry, apiErr := statusError(path, response.StatusCode)
+		return nil, retry, apiErr
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 16*1024*1024+1))
+	if ctx.Err() != nil {
+		return nil, false, &Error{Code: CodeTimeout, Path: path}
+	}
+	if len(data) > 16*1024*1024 {
+		return nil, false, &Error{Code: CodeBudget, Path: path}
+	}
+	if err != nil {
+		return nil, ctx.Err() == nil, transportError(path, err)
+	}
+	if decode != nil && decode(data) != nil {
+		return nil, false, &Error{Code: CodeInvalid, Path: path}
+	}
+	return data, false, nil
 }

@@ -16,6 +16,9 @@ import (
 
 const Route = "argocd"
 
+// syncOutOfSync is the Argo CD sync status for a diverged application.
+const syncOutOfSync = "OutOfSync"
+
 var dimensions = []string{"sync", "health", "operation"}
 
 type Application struct {
@@ -61,7 +64,12 @@ type API struct {
 }
 
 func (a API) Collect(ctx context.Context) ([]Application, error) {
-	return kube.List[Application](ctx, a.Client, "/apis/argoproj.io/v1alpha1/namespaces/"+a.Namespace+"/applications", "")
+	return kube.List[Application](
+		ctx,
+		a.Client,
+		"/apis/argoproj.io/v1alpha1/namespaces/"+a.Namespace+"/applications",
+		"",
+	)
 }
 
 type Check struct {
@@ -77,7 +85,11 @@ func New(c config.ArgoCD, api Collector) *Check {
 func (c *Check) Name() string { return "argocd" }
 
 func (c *Check) Describe() []result.Collection {
-	collection := result.Collection{Route: Route, Check: "argocd/application", Dimensions: dimensions}
+	collection := result.Collection{
+		Route:      Route,
+		Check:      "argocd/application",
+		Dimensions: dimensions,
+	}
 	for _, name := range c.config.Expected {
 		collection.Items = append(collection.Items, result.Item{Target: name})
 	}
@@ -97,13 +109,18 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 func (c *Check) Evaluate(apps []Application, now time.Time) result.Collection {
 	c.seen.Begin(now)
 	defer c.seen.End()
-	collection := result.Collection{Route: Route, Check: "argocd/application", Dimensions: dimensions, Values: map[string]any{}}
+	collection := result.Collection{
+		Route:      Route,
+		Check:      "argocd/application",
+		Dimensions: dimensions,
+		Values:     map[string]any{},
+	}
 	present := map[string]bool{}
 	manualOutOfSync := 0
 	for _, app := range apps {
 		present[app.Metadata.Name] = true
 		item := c.application(app, now)
-		if !app.automated() && app.Status.Sync.Status == "OutOfSync" {
+		if !app.automated() && app.Status.Sync.Status == syncOutOfSync {
 			manualOutOfSync++
 		}
 		collection.Items = append(collection.Items, item)
@@ -112,14 +129,44 @@ func (c *Check) Evaluate(apps []Application, now time.Time) result.Collection {
 	for _, name := range c.config.Expected {
 		if !present[name] {
 			missing = append(missing, name)
-			collection.Items = append(collection.Items, result.Item{Target: name, Values: map[string]any{},
-				Results: map[string]string{"sync": result.Reason("missing"), "health": result.NA, "operation": result.NA}})
+			collection.Items = append(collection.Items, result.Item{
+				Target: name,
+				Values: map[string]any{},
+				Results: map[string]string{
+					"sync":      result.Reason("missing"),
+					"health":    result.NA,
+					"operation": result.NA,
+				},
+			})
 		}
 	}
-	sort.Slice(collection.Items, func(i, j int) bool { return collection.Items[i].Target < collection.Items[j].Target })
+	sort.Slice(
+		collection.Items,
+		func(i, j int) bool { return collection.Items[i].Target < collection.Items[j].Target },
+	)
 	collection.Values["manualOutOfSync"] = manualOutOfSync
 	collection.Results = map[string]string{"inventory": result.Inventory(missing, nil)}
 	return collection
+}
+
+// syncResult maps one Argo CD sync status to the sync dimension result.
+func syncResult(status string, since, window time.Duration, values map[string]any) string {
+	switch status {
+	case "Synced":
+		return result.OK
+	case syncOutOfSync:
+		values["outOfSyncObservedSeconds"] = since.Seconds()
+		if since > window {
+			return result.Reason(
+				"out_of_sync",
+				result.Labeled("for", result.Dur(since.Seconds())),
+				result.Labeled("max", result.Dur(window.Seconds())),
+			)
+		}
+		return result.OK
+	default:
+		return result.Reason("sync_unknown")
+	}
 }
 
 func (c *Check) application(app Application, now time.Time) result.Item {
@@ -127,11 +174,17 @@ func (c *Check) application(app Application, now time.Time) result.Item {
 	// A replacement Application can reuse the same name between samples.
 	observationKey := name + "/" + app.Metadata.UID
 	automated := app.automated()
-	values := map[string]any{"automated": automated, "syncStatus": result.SafeName(app.Status.Sync.Status),
-		"healthStatus": result.SafeName(app.Status.Health.Status), "observedSinceSeconds": c.seen.Observed(now).Seconds()}
+	values := map[string]any{
+		"automated":  automated,
+		"syncStatus": result.SafeName(app.Status.Sync.Status),
+		"healthStatus": result.SafeName(
+			app.Status.Health.Status,
+		),
+		"observedSinceSeconds": c.seen.Observed(now).Seconds(),
+	}
 	outOfSync := 0
 	for _, r := range app.Status.Resources {
-		if r.Status == "OutOfSync" {
+		if r.Status == syncOutOfSync {
 			outOfSync++
 		}
 	}
@@ -146,20 +199,9 @@ func (c *Check) application(app Application, now time.Time) result.Item {
 	// Only intentional drift (OutOfSync) gets the window; an Unknown or
 	// missing sync status means Argo CD could not compare, which is never
 	// known to be healthy.
-	drifted := app.Status.Sync.Status == "OutOfSync"
+	drifted := app.Status.Sync.Status == syncOutOfSync
 	since := c.seen.Active(observationKey+"/sync", drifted, now)
-	switch app.Status.Sync.Status {
-	case "Synced":
-		results["sync"] = result.OK
-	case "OutOfSync":
-		results["sync"] = result.OK
-		values["outOfSyncObservedSeconds"] = since.Seconds()
-		if since > window {
-			results["sync"] = result.Reason("out_of_sync", result.Labeled("for", result.Dur(since.Seconds())), result.Labeled("max", result.Dur(window.Seconds())))
-		}
-	default:
-		results["sync"] = result.Reason("sync_unknown")
-	}
+	results["sync"] = syncResult(app.Status.Sync.Status, since, window, values)
 	progressingFor := time.Duration(c.config.ProgressingSeconds) * time.Second
 	switch status := app.Status.Health.Status; status {
 	case "Healthy", "Suspended":
@@ -177,7 +219,11 @@ func (c *Check) application(app Application, now time.Time) result.Item {
 		}
 		results["health"] = result.OK
 		if since > progressingFor {
-			results["health"] = result.Reason("progressing", result.Labeled("for", result.Dur(since.Seconds())), result.Labeled("max", result.Dur(progressingFor.Seconds())))
+			results["health"] = result.Reason(
+				"progressing",
+				result.Labeled("for", result.Dur(since.Seconds())),
+				result.Labeled("max", result.Dur(progressingFor.Seconds())),
+			)
 		}
 	default:
 		results["health"] = result.Reason("unknown")

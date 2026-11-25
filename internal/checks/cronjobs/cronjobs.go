@@ -15,7 +15,7 @@ import (
 const Route = "cronjobs"
 
 // Parity dimensions first: schedule and last_success are what the Python
-// monitors checked. last_run, active and failures are new detail.
+// monitors checked. Last_run, active and failures are new detail.
 var dimensions = []string{"schedule", "last_success", "last_run", "active", "failures"}
 
 type CronJob struct {
@@ -61,15 +61,29 @@ type API struct {
 func (a API) Collect(ctx context.Context) (Sample, error) {
 	var sample Sample
 	for _, namespace := range a.Namespaces {
-		crons, err := kube.List[CronJob](ctx, a.Client, "/apis/batch/v1/namespaces/"+namespace+"/cronjobs", "")
+		crons, err := kube.List[CronJob](
+			ctx,
+			a.Client,
+			"/apis/batch/v1/namespaces/"+namespace+"/cronjobs",
+			"",
+		)
 		if err != nil {
 			return Sample{}, err
 		}
-		jobs, err := kube.List[Job](ctx, a.Client, "/apis/batch/v1/namespaces/"+namespace+"/jobs", "")
+		jobs, err := kube.List[Job](
+			ctx,
+			a.Client,
+			"/apis/batch/v1/namespaces/"+namespace+"/jobs",
+			"",
+		)
 		if err != nil {
 			return Sample{}, err
 		}
-		sample.CronJobs, sample.Jobs = append(sample.CronJobs, crons...), append(sample.Jobs, jobs...)
+		sample.CronJobs, sample.Jobs = append(
+			sample.CronJobs,
+			crons...), append(
+			sample.Jobs,
+			jobs...)
 	}
 	return sample, nil
 }
@@ -132,12 +146,16 @@ func LastSuccess(value *string, now time.Time, maxAge int) (string, map[string]a
 	case age < 0:
 		return result.Reason("future_timestamp", result.Labeled("in", result.Dur(age))), values
 	case age > float64(maxAge):
-		return result.Reason("stale", result.Labeled("last", result.Dur(age)), result.Labeled("max", result.Dur(float64(maxAge)))), values
+		return result.Reason(
+			"stale",
+			result.Labeled("last", result.Dur(age)),
+			result.Labeled("max", result.Dur(float64(maxAge))),
+		), values
 	}
 	return result.OK, values
 }
 
-func finished(job Job) (done, failed bool) {
+func finished(job Job) (bool, bool) {
 	if kube.ConditionTrue(job.Status.Conditions, "Failed") {
 		return true, true
 	}
@@ -163,9 +181,13 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 		cron, found := crons[item.Key()]
 		if !found {
 			missing = append(missing, item.Key())
-			collection.Items = append(collection.Items, result.Item{Target: item.Key(), Values: map[string]any{},
-				Results: result.Set(dimensions, map[string]string{"schedule": result.Reason("missing"), "last_success": result.Reason("unknown"),
-					"last_run": result.NA, "active": result.NA, "failures": result.NA})})
+			collection.Items = append(collection.Items, result.Item{
+				Target: item.Key(), Values: map[string]any{},
+				Results: result.Set(dimensions, map[string]string{
+					"schedule": result.Reason("missing"), "last_success": result.Reason("unknown"),
+					"last_run": result.NA, "active": result.NA, "failures": result.NA,
+				}),
+			})
 			continue
 		}
 		results := map[string]string{"schedule": result.OK}
@@ -174,7 +196,11 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 			results["schedule"] = result.Reason("suspended")
 		}
 		var values map[string]any
-		results["last_success"], values = LastSuccess(cron.Status.LastSuccessfulTime, now, item.MaxAgeSeconds)
+		results["last_success"], values = LastSuccess(
+			cron.Status.LastSuccessfulTime,
+			now,
+			item.MaxAgeSeconds,
+		)
 		values["suspended"] = suspended
 		values["maxRunSeconds"] = item.MaxRunSeconds
 		if cron.Status.LastScheduleTime != "" {
@@ -184,11 +210,15 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 		}
 		var jobs []Job
 		for _, job := range sample.Jobs {
-			if job.Metadata.Namespace == cron.Metadata.Namespace && kube.OwnedBy(job.Metadata, "CronJob", cron.Metadata.UID) {
+			if job.Metadata.Namespace == cron.Metadata.Namespace &&
+				kube.OwnedBy(job.Metadata, "CronJob", cron.Metadata.UID) {
 				jobs = append(jobs, job)
 			}
 		}
-		sort.SliceStable(jobs, func(i, j int) bool { return created(jobs[i]).After(created(jobs[j])) })
+		sort.SliceStable(
+			jobs,
+			func(i, j int) bool { return created(jobs[i]).After(created(jobs[j])) },
+		)
 		evaluateRuns(jobs, cron.Status.LastSuccessfulTime, item, now, results, values)
 		// Kubernetes keeps one failed Job by default; when it cannot retain
 		// enough failures to reach the threshold, failures cannot be judged.
@@ -200,7 +230,14 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 		if history <= item.MaxConsecutiveFailures {
 			results["failures"] = result.NA
 		}
-		collection.Items = append(collection.Items, result.Item{Target: item.Key(), Results: result.Set(dimensions, results), Values: values})
+		collection.Items = append(
+			collection.Items,
+			result.Item{
+				Target:  item.Key(),
+				Results: result.Set(dimensions, results),
+				Values:  values,
+			},
+		)
 	}
 	collection.Results = map[string]string{"inventory": result.Inventory(missing, nil)}
 	return collection
@@ -209,7 +246,86 @@ func Evaluate(c config.CronJobs, sample Sample, now time.Time) result.Collection
 // evaluateRuns judges retained Jobs. The CronJob's lastSuccessfulTime is
 // evidence too: a success whose Job was already pruned (for example with
 // successfulJobsHistoryLimit: 0) supersedes every failure created before it.
-func evaluateRuns(jobs []Job, lastSuccessfulTime *string, item config.CronJob, now time.Time, results map[string]string, values map[string]any) {
+type runCounters struct {
+	stuck, active, consecutive int
+	counting, sawFinished      bool
+}
+
+// runStart resolves the run's effective start time.
+func runStart(job Job, done bool) string {
+	startTime := job.Status.StartTime
+	if !done && startTime == "" && !kube.ConditionTrue(job.Status.Conditions, "Suspended") {
+		// Count time waiting for the first start. A suspended Job can
+		// also lack a start time, which is reset when it resumes.
+		return job.Metadata.CreationTimestamp
+	}
+	return startTime
+}
+
+// noteActive records one active run.
+func (c *runCounters) noteActive(
+	job Job,
+	start time.Time,
+	startErr error,
+	maxRun float64,
+	now time.Time,
+) {
+	c.active++
+	if !job.Spec.Suspend && startErr == nil && now.Sub(start).Seconds() > maxRun {
+		c.stuck++
+	}
+}
+
+// lastRunResult evaluates the latest finished run.
+func lastRunResult(
+	job Job,
+	failed, superseded bool,
+	start time.Time,
+	startErr error,
+	maxRun float64,
+	results map[string]string,
+	values map[string]any,
+) {
+	switch {
+	case superseded:
+		// The latest run succeeded; its Job is gone.
+		values["lastRun"] = "lastSuccessfulTime"
+	case failed:
+		results["last_run"] = result.Reason("failed")
+	default:
+		if end, err := kube.ParseTime(
+			job.Status.CompletionTime,
+		); err == nil && startErr == nil &&
+			end.Sub(start).Seconds() > maxRun {
+			results["last_run"] = result.Reason(
+				"overran",
+				result.Labeled("took", result.Dur(end.Sub(start).Seconds())),
+				result.Labeled("max", result.Dur(maxRun)),
+			)
+		}
+	}
+}
+
+// finishResults sets the last_run fallback from the CronJob's last success.
+func (c *runCounters) finishResults(
+	lastSuccess time.Time,
+	results map[string]string,
+	values map[string]any,
+) {
+	if !c.sawFinished && !lastSuccess.IsZero() {
+		results["last_run"] = result.OK
+		values["lastRun"] = "lastSuccessfulTime"
+	}
+}
+
+func evaluateRuns(
+	jobs []Job,
+	lastSuccessfulTime *string,
+	item config.CronJob,
+	now time.Time,
+	results map[string]string,
+	values map[string]any,
+) {
 	results["last_run"], results["active"], results["failures"] = result.NA, result.OK, result.OK
 	var lastSuccess time.Time
 	if lastSuccessfulTime != nil {
@@ -218,58 +334,43 @@ func evaluateRuns(jobs []Job, lastSuccessfulTime *string, item config.CronJob, n
 		}
 	}
 	maxRun := float64(item.MaxRunSeconds)
-	stuck, active, consecutive := 0, 0, 0
-	counting, sawFinished := true, false
+	c := runCounters{counting: true}
 	for _, job := range jobs {
 		done, failed := finished(job)
-		startTime := job.Status.StartTime
-		if !done && startTime == "" && !kube.ConditionTrue(job.Status.Conditions, "Suspended") {
-			// Count time waiting for the first start. A suspended Job can
-			// also lack a start time, which is reset when it resumes.
-			startTime = job.Metadata.CreationTimestamp
-		}
-		start, startErr := kube.ParseTime(startTime)
+		start, startErr := kube.ParseTime(runStart(job, done))
 		if !done {
-			active++
-			if !job.Spec.Suspend && startErr == nil && now.Sub(start).Seconds() > maxRun {
-				stuck++
-			}
+			c.noteActive(job, start, startErr, maxRun, now)
 			continue
 		}
 		superseded := failed && !lastSuccess.IsZero() && !created(job).After(lastSuccess)
-		if !sawFinished {
-			sawFinished = true
+		if !c.sawFinished {
+			c.sawFinished = true
 			results["last_run"] = result.OK
 			values["lastRun"] = job.Metadata.Name
-			switch {
-			case superseded:
-				// The latest run succeeded; its Job is gone.
-				values["lastRun"] = "lastSuccessfulTime"
-			case failed:
-				results["last_run"] = result.Reason("failed")
-			default:
-				if end, err := kube.ParseTime(job.Status.CompletionTime); err == nil && startErr == nil && end.Sub(start).Seconds() > maxRun {
-					results["last_run"] = result.Reason("overran", result.Labeled("took", result.Dur(end.Sub(start).Seconds())), result.Labeled("max", result.Dur(maxRun)))
-				}
-			}
+			lastRunResult(job, failed, superseded, start, startErr, maxRun, results, values)
 		}
-		if counting {
+		if c.counting {
 			if failed && !superseded {
-				consecutive++
+				c.consecutive++
 			} else {
-				counting = false
+				c.counting = false
 			}
 		}
 	}
-	if !sawFinished && !lastSuccess.IsZero() {
-		results["last_run"] = result.OK
-		values["lastRun"] = "lastSuccessfulTime"
+	c.finishResults(lastSuccess, results, values)
+	values["active"], values["consecutiveFailures"] = c.active, c.consecutive
+	if c.stuck > 0 {
+		results["active"] = result.Reason(
+			"stuck",
+			result.Int(int64(c.stuck)),
+			result.Labeled("max", result.Dur(maxRun)),
+		)
 	}
-	values["active"], values["consecutiveFailures"] = active, consecutive
-	if stuck > 0 {
-		results["active"] = result.Reason("stuck", result.Int(int64(stuck)), result.Labeled("max", result.Dur(maxRun)))
-	}
-	if consecutive > item.MaxConsecutiveFailures {
-		results["failures"] = result.Reason("consecutive_failures", result.Int(int64(consecutive)), result.Labeled("max", result.Int(int64(item.MaxConsecutiveFailures))))
+	if c.consecutive > item.MaxConsecutiveFailures {
+		results["failures"] = result.Reason(
+			"consecutive_failures",
+			result.Int(int64(c.consecutive)),
+			result.Labeled("max", result.Int(int64(item.MaxConsecutiveFailures))),
+		)
 	}
 }

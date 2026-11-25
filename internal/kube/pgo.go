@@ -1,7 +1,9 @@
 package kube
 
-const Prefix = "postgres-operator.crunchydata.com/"
-const ClusterAPI = "postgres-operator.crunchydata.com/v1beta1"
+const (
+	Prefix     = "postgres-operator.crunchydata.com/"
+	ClusterAPI = "postgres-operator.crunchydata.com/v1beta1"
+)
 
 type Owner struct {
 	APIVersion string `json:"apiVersion"`

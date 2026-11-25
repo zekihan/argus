@@ -9,6 +9,7 @@ package result
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"sort"
@@ -108,7 +109,7 @@ const maxNameLength = 253
 // outside a conservative set are replaced and the value is capped.
 func Name(s string) Param { return Param{SafeName(s)} }
 
-// SafeName sanitises an identifier for use in results and values.
+// SafeName sanitizes an identifier for use in results and values.
 func SafeName(s string) string { return safeName(s, maxNameLength) }
 
 func safeName(s string, limit int) string {
@@ -117,10 +118,10 @@ func safeName(s string, limit int) string {
 
 // ProbeText passes through one fixed host-probe field: printable ASCII only,
 // capped in length. It is used for nothing else.
-func ProbeText(s string, max int) string {
+func ProbeText(s string, limit int) string {
 	var b strings.Builder
 	for _, r := range s {
-		if b.Len() >= max {
+		if b.Len() >= limit {
 			break
 		}
 		switch {
@@ -137,25 +138,25 @@ func ProbeText(s string, max int) string {
 
 // Item is one checked object: a result per dimension plus raw values.
 type Item struct {
-	Target  string
-	Results map[string]string
-	Values  map[string]any
+	Target  string            `json:"Target"`
+	Results map[string]string `json:"Results"`
+	Values  map[string]any    `json:"Values"`
 	// Refine, when set, re-derives time-dependent results at response time.
 	Refine func(now time.Time, item *Item) `json:"-"`
 }
 
 // Collection is one route family: /v1/<Route> aggregates /v1/<Route>/<Target>.
 type Collection struct {
-	Route      string
-	Check      string
-	Dimensions []string
-	Items      []Item
+	Route      string   `json:"Route"`
+	Check      string   `json:"Check"`
+	Dimensions []string `json:"Dimensions"`
+	Items      []Item   `json:"Items"`
 	// Results holds collection-level dimensions such as inventory.
-	Results map[string]string
-	Values  map[string]any
+	Results map[string]string `json:"Results"`
+	Values  map[string]any    `json:"Values"`
 	// Singleton collections are one item served at /v1/<Route>; their
 	// dimensions live in Results and Items is empty.
-	Singleton bool
+	Singleton bool `json:"Singleton"`
 }
 
 // Envelope is the response body for every check route.
@@ -256,25 +257,7 @@ func observed(t time.Time) *time.Time {
 
 func copyValues(values map[string]any) map[string]any {
 	out := make(map[string]any, len(values))
-	for k, v := range values {
-		out[k] = v
-	}
-	return out
-}
-
-func (c Collection) order() []string {
-	return append([]string{"collection", "inventory"}, c.Dimensions...)
-}
-
-// Refined returns the item with time-dependent results derived for now.
-func (it Item) Refined(now time.Time) Item {
-	out := Item{Target: it.Target, Results: make(map[string]string, len(it.Results)+1), Values: copyValues(it.Values)}
-	for k, v := range it.Results {
-		out.Results[k] = v
-	}
-	if it.Refine != nil {
-		it.Refine(now, &out)
-	}
+	maps.Copy(out, values)
 	return out
 }
 
@@ -288,12 +271,33 @@ func (c Collection) Find(target string) (Item, bool) {
 	return Item{}, false
 }
 
-// ItemEnvelope renders one item. status is "ok" or the collection's failure code.
+// Refined returns the item with time-dependent results derived for now.
+func (it Item) Refined(now time.Time) Item {
+	out := Item{
+		Target:  it.Target,
+		Results: make(map[string]string, len(it.Results)+1),
+		Values:  copyValues(it.Values),
+	}
+	maps.Copy(out.Results, it.Results)
+	if it.Refine != nil {
+		it.Refine(now, &out)
+	}
+	return out
+}
+
+// ItemEnvelope renders one item. Status is "ok" or the collection's failure code.
 func (c Collection) ItemEnvelope(item Item, status string, observedAt, now time.Time) Envelope {
 	item = item.Refined(now)
 	item.Results["collection"] = status
-	return Envelope{Check: c.Check, Target: item.Target, Healthy: allHealthy(item.Results), ObservedAt: observed(observedAt),
-		Summary: Summarize(item.Results, c.order()), Results: item.Results, Values: item.Values}
+	return Envelope{
+		Check:      c.Check,
+		Target:     item.Target,
+		Healthy:    allHealthy(item.Results),
+		ObservedAt: observed(observedAt),
+		Summary:    Summarize(item.Results, c.order()),
+		Results:    item.Results,
+		Values:     item.Values,
+	}
 }
 
 // Aggregate renders the collection route: one result per dimension naming the
@@ -303,13 +307,18 @@ func (c Collection) Aggregate(status string, observedAt, now time.Time) Envelope
 	if status == Pending {
 		results["inventory"] = Pending
 	}
-	for k, v := range c.Results {
-		results[k] = v
-	}
+	maps.Copy(results, c.Results)
 	values := copyValues(c.Values)
 	if c.Singleton {
-		return Envelope{Check: c.Check, Target: "", Healthy: allHealthy(results), ObservedAt: observed(observedAt),
-			Summary: Summarize(results, c.order()), Results: results, Values: values}
+		return Envelope{
+			Check:      c.Check,
+			Target:     "",
+			Healthy:    allHealthy(results),
+			ObservedAt: observed(observedAt),
+			Summary:    Summarize(results, c.order()),
+			Results:    results,
+			Values:     values,
+		}
 	}
 	failing := map[string][]string{}
 	items := make(map[string]string, len(c.Items))
@@ -344,8 +353,20 @@ func (c Collection) Aggregate(status string, observedAt, now time.Time) Envelope
 	}
 	values["items"] = len(c.Items)
 	values["unhealthyItems"] = unhealthy
-	return Envelope{Check: c.Route, Target: "", Healthy: allHealthy(results) && unhealthy == 0, ObservedAt: observed(observedAt),
-		Summary: Summarize(results, c.order()), Results: results, Values: values, Items: items}
+	return Envelope{
+		Check:      c.Route,
+		Target:     "",
+		Healthy:    allHealthy(results) && unhealthy == 0,
+		ObservedAt: observed(observedAt),
+		Summary:    Summarize(results, c.order()),
+		Results:    results,
+		Values:     values,
+		Items:      items,
+	}
+}
+
+func (c Collection) order() []string {
+	return append([]string{"collection", "inventory"}, c.Dimensions...)
 }
 
 // Inventory builds the inventory result from missing and unexpected targets.
@@ -354,10 +375,16 @@ func Inventory(missing, unexpected []string) string {
 	sort.Strings(unexpected)
 	var parts []string
 	if len(missing) > 0 {
-		parts = append(parts, "missing("+strconv.Itoa(len(missing))+"): "+capJoin(sanitized(missing), ", "))
+		parts = append(
+			parts,
+			"missing("+strconv.Itoa(len(missing))+"): "+capJoin(sanitized(missing), ", "),
+		)
 	}
 	if len(unexpected) > 0 {
-		parts = append(parts, "unexpected("+strconv.Itoa(len(unexpected))+"): "+capJoin(sanitized(unexpected), ", "))
+		parts = append(
+			parts,
+			"unexpected("+strconv.Itoa(len(unexpected))+"): "+capJoin(sanitized(unexpected), ", "),
+		)
 	}
 	if len(parts) == 0 {
 		return OK

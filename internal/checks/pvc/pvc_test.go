@@ -14,19 +14,46 @@ import (
 
 var now = time.Now().UTC()
 
-func ptr(n uint64) *uint64 { return &n }
-func cfg() config.PVCs {
-	return config.PVCs{StorageClasses: []string{"longhorn"}, ExpectedNodes: []string{"worker"}, UsedPercent: 80, MaxStatsAgeSeconds: 300}
+//go:fix inline
+func ptr(n uint64) *uint64 {
+	p := n
+	return &p
 }
+
+func cfg() config.PVCs {
+	return config.PVCs{
+		StorageClasses:     []string{"longhorn"},
+		ExpectedNodes:      []string{"worker"},
+		UsedPercent:        80,
+		MaxStatsAgeSeconds: 300,
+	}
+}
+
 func sample(t *testing.T) Sample {
 	t.Helper()
 	var claim Claim
-	if err := json.Unmarshal([]byte(`{"metadata":{"namespace":"db","name":"pgdata","uid":"claim-a"},"spec":{"storageClassName":"longhorn","volumeName":"pv-a"},"status":{"phase":"Bound"}}`), &claim); err != nil {
+	if err := json.Unmarshal(
+		[]byte(
+			`{"metadata":{"namespace":"db","name":"pgdata","uid":"claim-a"},"spec":{"storageClassName":"longhorn","volumeName":"pv-a"},"status":{"phase":"Bound"}}`,
+		),
+		&claim,
+	); err != nil {
 		t.Fatal(err)
 	}
 	var n Node
 	n.Metadata.Name = "worker"
-	return Sample{Claims: []Claim{claim}, Nodes: []Node{n}, Stats: []VolumeStats{{PVCRef: &config.NamespacedName{Namespace: "db", Name: "pgdata"}, Time: now.Format(time.RFC3339), UsedBytes: ptr(80), CapacityBytes: ptr(100)}}}
+	return Sample{
+		Claims: []Claim{claim},
+		Nodes:  []Node{n},
+		Stats: []VolumeStats{
+			{
+				PVCRef:        &config.NamespacedName{Namespace: "db", Name: "pgdata"},
+				Time:          now.Format(time.RFC3339),
+				UsedBytes:     ptr(80),
+				CapacityBytes: ptr(100),
+			},
+		},
+	}
 }
 
 type fakeAPI struct {
@@ -39,7 +66,7 @@ func (f fakeAPI) Collect(context.Context) (Sample, error) { return f.sample, f.e
 func TestThresholdFailsItemAndAggregateHTTP(t *testing.T) {
 	for _, used := range []uint64{0, 79, 80, 81, 100} {
 		s := sample(t)
-		s.Stats[0].UsedBytes = ptr(used)
+		s.Stats[0].UsedBytes = new(used)
 		h := checktest.New(New(cfg(), fakeAPI{sample: s}), now).Refresh(t)
 		want := 200
 		if used > 80 {
@@ -115,7 +142,7 @@ func TestExpectedPVCAndMultipleMounts(t *testing.T) {
 	}
 	for _, used := range []uint64{50, 95} {
 		duplicate := s.Stats[0]
-		duplicate.UsedBytes = ptr(used)
+		duplicate.UsedBytes = new(used)
 		s.Stats = append(s.Stats, duplicate)
 	}
 	stale := s.Stats[0]
@@ -123,7 +150,8 @@ func TestExpectedPVCAndMultipleMounts(t *testing.T) {
 	s.Stats = append(s.Stats, stale)
 	c = New(cfg(), nil).Evaluate(s, now)
 	item, _ := c.Find("db/pgdata")
-	if item.Values["usedPercent"] != float64(95) || !strings.HasPrefix(item.Results["usage"], "high(") {
+	if item.Values["usedPercent"] != float64(95) ||
+		!strings.HasPrefix(item.Results["usage"], "high(") {
 		t.Fatal(item)
 	}
 }
@@ -146,7 +174,11 @@ func TestKubeletStatsPredatingClaimCreationDoNotCount(t *testing.T) {
 	s.Stats[0].UsedBytes = ptr(95)
 	s.Stats = append(s.Stats, current)
 	h = checktest.New(New(cfg(), fakeAPI{sample: s}), now).Refresh(t)
-	if code, e := h.Get(t, Route+"/db/pgdata"); code != 200 || e.Results["usage"] != "ok" || e.Values["usedPercent"] != float64(80) {
+	if code, e := h.Get(
+		t,
+		Route+"/db/pgdata",
+	); code != 200 || e.Results["usage"] != "ok" ||
+		e.Values["usedPercent"] != float64(80) {
 		t.Fatalf("current measurement was not used: %d %+v", code, e)
 	}
 }
@@ -208,7 +240,7 @@ func TestAllowedUnmountedNeedsPositiveAttachmentInventory(t *testing.T) {
 func TestRemountCacheExpiresAndKeepsHighMeasurementFailing(t *testing.T) {
 	for _, used := range []uint64{50, 81} {
 		s := sample(t)
-		s.Stats[0].UsedBytes = ptr(used)
+		s.Stats[0].UsedBytes = new(used)
 		check := New(cfg(), nil)
 		check.Evaluate(s, now)
 		s.Stats = nil
@@ -219,7 +251,8 @@ func TestRemountCacheExpiresAndKeepsHighMeasurementFailing(t *testing.T) {
 		if e := c.Aggregate("ok", now, now.Add(301*time.Second)); e.Healthy {
 			t.Fatal("response-time expiry failed", e)
 		}
-		if e := check.Evaluate(s, now.Add(301*time.Second)).Aggregate("ok", now, now.Add(301*time.Second)); e.Healthy {
+		if e := check.Evaluate(s, now.Add(301*time.Second)).
+			Aggregate("ok", now, now.Add(301*time.Second)); e.Healthy {
 			t.Fatal("cached measurement did not expire", e)
 		}
 		if len(check.cached) != 0 {
@@ -246,7 +279,8 @@ func TestDetachedHighCacheAndRawBlockApplicability(t *testing.T) {
 	s.Stats[0].UsedBytes = ptr(81)
 	check.Evaluate(s, now)
 	s.Stats = nil
-	if e := check.Evaluate(s, now.Add(time.Minute)).Aggregate("ok", now, now.Add(time.Minute)); e.Healthy {
+	if e := check.Evaluate(s, now.Add(time.Minute)).
+		Aggregate("ok", now, now.Add(time.Minute)); e.Healthy {
 		t.Fatal("detached high measurement passed", e)
 	}
 	s.Claims[0].Spec.VolumeMode = "Block"
@@ -351,8 +385,15 @@ func TestInvalidSampleCannotBeHiddenByLaterStaleSample(t *testing.T) {
 				conf.AllowUnmounted = []config.NamespacedName{{Namespace: "db", Name: "pgdata"}}
 				c := New(conf, nil).Evaluate(s, now)
 				item, _ := c.Find("db/pgdata")
-				if item.Results["usage"] != "metrics_invalid" || c.Aggregate("ok", now, now).Healthy {
-					t.Fatalf("attached=%v future=%v reverse=%v item=%+v", attached, future, reverse, item)
+				if item.Results["usage"] != "metrics_invalid" ||
+					c.Aggregate("ok", now, now).Healthy {
+					t.Fatalf(
+						"attached=%v future=%v reverse=%v item=%+v",
+						attached,
+						future,
+						reverse,
+						item,
+					)
 				}
 			}
 		}

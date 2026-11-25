@@ -24,7 +24,15 @@ func TestConditionalSaveAndReload(t *testing.T) {
 		t.Fatal(ledger, err)
 	}
 	now := time.Now().UTC()
-	want := Ledger{"db/db/repo1": {UID: "uid", RepositoryID: "destination", Created: now.Add(-time.Hour), LastSuccess: now, Source: "Completed Job"}}
+	want := Ledger{
+		"db/db/repo1": {
+			UID:          "uid",
+			RepositoryID: "destination",
+			Created:      now.Add(-time.Hour),
+			LastSuccess:  now,
+			Source:       "Completed Job",
+		},
+	}
 	if err := store.Save(t.Context(), want); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +61,14 @@ func TestTimeoutAfterCommitRequiresReread(t *testing.T) {
 	if _, err := store.Load(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	ledger := Ledger{"db/db/repo1": {UID: "uid", RepositoryID: "destination", Created: time.Unix(0, 0).UTC(), NotBefore: time.Unix(10, 0).UTC()}}
+	ledger := Ledger{
+		"db/db/repo1": {
+			UID:          "uid",
+			RepositoryID: "destination",
+			Created:      time.Unix(0, 0).UTC(),
+			NotBefore:    time.Unix(10, 0).UTC(),
+		},
+	}
 	if err := store.Save(t.Context(), ledger); kube.CodeOf(err) != kube.CodeTimeout {
 		t.Fatal(err)
 	}
@@ -74,7 +89,12 @@ func TestSaveRequiresConfigMapToConfirmLedger(t *testing.T) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"metadata":{"resourceVersion":%q},"data":{"pgbackrest.json":%q}}`, version, empty)
+		_, _ = fmt.Fprintf(
+			w,
+			`{"metadata":{"resourceVersion":%q},"data":{"pgbackrest.json":%q}}`,
+			version,
+			empty,
+		)
 	}))
 	t.Cleanup(server.Close)
 	client, err := kube.New(server.URL, "", "", "test", 5*time.Second)
@@ -85,7 +105,9 @@ func TestSaveRequiresConfigMapToConfirmLedger(t *testing.T) {
 	if _, err := store.Load(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	ledger := Ledger{"db/db/repo1": {UID: "uid", RepositoryID: "destination", Created: time.Unix(0, 0).UTC()}}
+	ledger := Ledger{
+		"db/db/repo1": {UID: "uid", RepositoryID: "destination", Created: time.Unix(0, 0).UTC()},
+	}
 	if err := store.Save(t.Context(), ledger); kube.CodeOf(err) != kube.CodeInvalid {
 		t.Fatalf("save returned %v, want invalid response for an unconfirmed write", err)
 	}
@@ -95,9 +117,11 @@ func TestSaveRequiresConfigMapToConfirmLedger(t *testing.T) {
 }
 
 func TestCorruptMissingAndOversizedStateFailClosed(t *testing.T) {
-	for _, value := range []string{``, `{`, `{"version":3,"entries":{}}`, `{"version":1,"entries":null}`, `{"version":1,"version":1,"entries":{}}`,
+	for _, value := range []string{
+		``, `{`, `{"version":3,"entries":{}}`, `{"version":1,"entries":null}`, `{"version":1,"version":1,"entries":{}}`,
 		`{"version":1,"entries":{}} {}`, `{"version":1,"entries":{"x":{}}}`, `{"version":2,"entries":{},"extra":1}`,
-		`{"version":2,"entries":{}}` + strings.Repeat(" ", MaxBytes)} {
+		`{"version":2,"entries":{}}` + strings.Repeat(" ", MaxBytes),
+	} {
 		backend := NewMemory(value, true)
 		store := New(backend)
 		if _, err := store.Load(t.Context()); !errors.Is(err, ErrInvalid) {
@@ -110,12 +134,21 @@ func TestCorruptMissingAndOversizedStateFailClosed(t *testing.T) {
 	if _, err := New(NewMemory("", false)).Load(t.Context()); !errors.Is(err, ErrInvalid) {
 		t.Fatal("missing key accepted", err)
 	}
-	if _, err := New(NewMemory(empty, true).Missing()).Load(t.Context()); !errors.Is(err, ErrMissing) {
+	if _, err := New(
+		NewMemory(empty, true).Missing(),
+	).Load(t.Context()); !errors.Is(
+		err,
+		ErrMissing,
+	) {
 		t.Fatal("missing ConfigMap accepted", err)
 	}
 	big := Ledger{}
 	for i := range 1500 {
-		big[fmt.Sprintf("namespace-%04d/cluster-%04d/repo1", i, i)] = Entry{UID: strings.Repeat("u", 36), RepositoryID: strings.Repeat("a", 64), Created: time.Unix(0, 0).UTC()}
+		big[fmt.Sprintf("namespace-%04d/cluster-%04d/repo1", i, i)] = Entry{
+			UID:          strings.Repeat("u", 36),
+			RepositoryID: strings.Repeat("a", 64),
+			Created:      time.Unix(0, 0).UTC(),
+		}
 	}
 	if _, err := Encode(big); !errors.Is(err, ErrTooLarge) {
 		t.Fatal("oversized ledger encoded", err)
@@ -125,7 +158,11 @@ func TestCorruptMissingAndOversizedStateFailClosed(t *testing.T) {
 	if _, err := store.Load(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(t.Context(), big); !errors.Is(err, ErrTooLarge) || backend.Data() != empty {
+	if err := store.Save(
+		t.Context(),
+		big,
+	); !errors.Is(err, ErrTooLarge) ||
+		backend.Data() != empty {
 		t.Fatal("oversized ledger written", err)
 	}
 }
@@ -136,7 +173,7 @@ func TestLegacyAndIdentityOnlyCheckpoints(t *testing.T) {
 	if err != nil || old["db/db/repo1"].RepositoryID != "" {
 		t.Fatal(old, err)
 	}
-	birth := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	birth := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	cutoff := birth.Add(time.Hour)
 	entry := Entry{UID: "uid", Created: birth, RepositoryID: "destination", NotBefore: cutoff}
 	data, err := Encode(Ledger{"db/db/repo1": entry})
@@ -144,7 +181,8 @@ func TestLegacyAndIdentityOnlyCheckpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := Decode(data)
-	if err != nil || !got["db/db/repo1"].NotBefore.Equal(cutoff) || !got["db/db/repo1"].LastSuccess.IsZero() {
+	if err != nil || !got["db/db/repo1"].NotBefore.Equal(cutoff) ||
+		!got["db/db/repo1"].LastSuccess.IsZero() {
 		t.Fatal(got, err)
 	}
 	for _, mutate := range []func(*Entry){

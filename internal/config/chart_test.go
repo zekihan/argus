@@ -13,7 +13,7 @@ import (
 // fieldPaths lists every JSON field path of t: struct fields by name, map
 // values under "*", slice elements under "[]".
 func fieldPaths(t reflect.Type, prefix string, out map[string]bool) {
-	switch t.Kind() {
+	switch t.Kind() { //nolint:exhaustive // default covers scalar kinds.
 	case reflect.Pointer, reflect.Slice:
 		next := prefix
 		if t.Kind() == reflect.Slice {
@@ -23,8 +23,7 @@ func fieldPaths(t reflect.Type, prefix string, out map[string]bool) {
 	case reflect.Map:
 		fieldPaths(t.Elem(), prefix+".*", out)
 	case reflect.Struct:
-		for i := range t.NumField() {
-			f := t.Field(i)
+		for f := range t.Fields() {
 			if f.Anonymous {
 				fieldPaths(f.Type, prefix, out)
 				continue
@@ -36,12 +35,14 @@ func fieldPaths(t reflect.Type, prefix string, out map[string]bool) {
 			out[prefix+"."+name] = true
 			fieldPaths(f.Type, prefix+"."+name, out)
 		}
+	default:
+		// Scalar kinds have no JSON fields: nothing to list.
 	}
 }
 
 // presentPaths lists the field paths a JSON document sets, guided by t.
 func presentPaths(t reflect.Type, value any, prefix string, out map[string]bool) {
-	switch t.Kind() {
+	switch t.Kind() { //nolint:exhaustive // default covers scalar kinds.
 	case reflect.Pointer:
 		presentPaths(t.Elem(), value, prefix, out)
 	case reflect.Slice:
@@ -56,8 +57,7 @@ func presentPaths(t reflect.Type, value any, prefix string, out map[string]bool)
 		}
 	case reflect.Struct:
 		object, _ := value.(map[string]any)
-		for i := range t.NumField() {
-			f := t.Field(i)
+		for f := range t.Fields() {
 			if f.Anonymous {
 				presentPaths(f.Type, value, prefix, out)
 				continue
@@ -68,6 +68,8 @@ func presentPaths(t reflect.Type, value any, prefix string, out map[string]bool)
 				presentPaths(f.Type, v, prefix+"."+name, out)
 			}
 		}
+	default:
+		// Scalar kinds have no field paths: nothing to list.
 	}
 }
 
@@ -91,7 +93,10 @@ func TestFullChartValuesSetEveryConfigField(t *testing.T) {
 	// Mirror the chart's argus.config template.
 	rendered := values.Config
 	rendered["listenAddress"], rendered["tokenFile"] = ":8443", "/var/run/argus-auth/token"
-	rendered["tls"] = map[string]any{"certFile": "/var/run/argus-tls/tls.crt", "keyFile": "/var/run/argus-tls/tls.key"}
+	rendered["tls"] = map[string]any{
+		"certFile": "/var/run/argus-tls/tls.crt",
+		"keyFile":  "/var/run/argus-tls/tls.key",
+	}
 	rendered["state"] = map[string]any{"namespace": "argus", "name": "argus-state"}
 	checks := map[string]any{}
 	for name, section := range values.Checks {
@@ -108,7 +113,10 @@ func TestFullChartValuesSetEveryConfigField(t *testing.T) {
 		checks[name] = section
 	}
 	rendered["checks"] = checks
-	encoded, _ := json.Marshal(rendered)
+	encoded, err := json.Marshal(rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Parse(encoded); err != nil {
 		t.Fatal("full-config values do not load:", err)
 	}
@@ -123,7 +131,10 @@ func TestFullChartValuesSetEveryConfigField(t *testing.T) {
 	}
 	sort.Strings(missing)
 	if len(missing) > 0 {
-		t.Fatalf("charts/argus/ci/full-config-values.yaml does not set: %s", strings.Join(missing, ", "))
+		t.Fatalf(
+			"charts/argus/ci/full-config-values.yaml does not set: %s",
+			strings.Join(missing, ", "),
+		)
 	}
 }
 
@@ -137,9 +148,15 @@ var chartManaged = map[string]bool{
 // matchSchema requires every struct in t to be a closed schema object whose
 // properties are exactly the struct's JSON fields, so a typo in a check
 // section fails helm rendering instead of crash-looping the pod.
-func matchSchema(t *testing.T, typ reflect.Type, schema map[string]any, path string, extra map[string]bool) {
+func matchSchema(
+	t *testing.T,
+	typ reflect.Type,
+	schema map[string]any,
+	path string,
+	extra map[string]bool,
+) {
 	t.Helper()
-	switch typ.Kind() {
+	switch typ.Kind() { //nolint:exhaustive // default covers scalar kinds.
 	case reflect.Pointer:
 		matchSchema(t, typ.Elem(), schema, path, extra)
 	case reflect.Slice:
@@ -154,42 +171,81 @@ func matchSchema(t *testing.T, typ reflect.Type, schema map[string]any, path str
 			t.Fatalf("%s: map must be closed with one patternProperties entry", path)
 		}
 		for _, value := range patterns {
-			matchSchema(t, typ.Elem(), value.(map[string]any), path+".*", nil)
+			pattern, ok := value.(map[string]any)
+			if !ok {
+				t.Fatalf("%s: pattern is not an object", path)
+			}
+			matchSchema(t, typ.Elem(), pattern, path+".*", nil)
 		}
 	case reflect.Struct:
-		if schema["additionalProperties"] != false {
-			t.Fatalf("%s: schema object is not closed", path)
+		matchObject(t, typ, schema, path, extra)
+	default:
+		// Scalars have no schema shape to match.
+	}
+}
+
+// matchObject matches the schema against one configuration object.
+func matchObject(
+	t *testing.T,
+	typ reflect.Type,
+	schema map[string]any,
+	path string,
+	extra map[string]bool,
+) {
+	t.Helper()
+	if schema["additionalProperties"] != false {
+		t.Fatalf("%s: schema object is not closed", path)
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	want := map[string]reflect.Type{}
+	collectFields(typ, path, want)
+	matchPropertyShapes(t, properties, want, path, extra)
+	matchPropertySchemas(t, properties, want, path)
+}
+
+// collectFields records each JSON field (recursively through embedded types).
+func collectFields(typ reflect.Type, path string, want map[string]reflect.Type) {
+	for f := range typ.Fields() {
+		if f.Anonymous {
+			collectFields(f.Type, path, want)
+			continue
 		}
-		properties, _ := schema["properties"].(map[string]any)
-		want := map[string]reflect.Type{}
-		var collect func(reflect.Type)
-		collect = func(st reflect.Type) {
-			for i := range st.NumField() {
-				f := st.Field(i)
-				if f.Anonymous {
-					collect(f.Type)
-					continue
-				}
-				name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
-				if !chartManaged[path+"."+name] {
-					want[name] = f.Type
-				}
-			}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if !chartManaged[path+"."+name] {
+			want[name] = f.Type
 		}
-		collect(typ)
-		for name := range properties {
-			if _, ok := want[name]; !ok && !extra[name] {
-				t.Errorf("%s.%s: schema property has no configuration field", path, name)
-			}
+	}
+}
+
+func matchPropertyShapes(
+	t *testing.T,
+	properties map[string]any,
+	want map[string]reflect.Type,
+	path string,
+	extra map[string]bool,
+) {
+	t.Helper()
+	for name := range properties {
+		if _, ok := want[name]; !ok && !extra[name] {
+			t.Errorf("%s.%s: schema property has no configuration field", path, name)
 		}
-		for name, field := range want {
-			child, ok := properties[name].(map[string]any)
-			if !ok {
-				t.Errorf("%s.%s: configuration field missing from the chart schema", path, name)
-				continue
-			}
-			matchSchema(t, field, child, path+"."+name, nil)
+	}
+}
+
+func matchPropertySchemas(
+	t *testing.T,
+	properties map[string]any,
+	want map[string]reflect.Type,
+	path string,
+) {
+	t.Helper()
+	for name, field := range want {
+		child, ok := properties[name].(map[string]any)
+		if !ok {
+			t.Errorf("%s.%s: configuration field missing from the chart schema", path, name)
+			continue
 		}
+		matchSchema(t, field, child, path+"."+name, nil)
 	}
 }
 
@@ -202,15 +258,23 @@ func TestChartSchemaClosesEveryCheckSection(t *testing.T) {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
-	properties := schema["properties"].(map[string]any)
-	checks := properties["checks"].(map[string]any)
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("schema properties is not an object")
+	}
+	checks, ok := properties["checks"].(map[string]any)
+	if !ok {
+		t.Fatal("checks is not an object")
+	}
 	if checks["additionalProperties"] != false {
 		t.Fatal("checks is not closed")
 	}
-	sections := checks["properties"].(map[string]any)
+	sections, ok := checks["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("checks properties is not an object")
+	}
 	typ := reflect.TypeFor[Checks]()
-	for i := range typ.NumField() {
-		f := typ.Field(i)
+	for f := range typ.Fields() {
 		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
 		section, ok := sections[name].(map[string]any)
 		if !ok {
@@ -220,6 +284,10 @@ func TestChartSchemaClosesEveryCheckSection(t *testing.T) {
 		matchSchema(t, f.Type, section, ".checks."+name, map[string]bool{"enabled": true})
 	}
 	if len(sections) != typ.NumField() {
-		t.Errorf("chart schema has %d check sections, configuration has %d", len(sections), typ.NumField())
+		t.Errorf(
+			"chart schema has %d check sections, configuration has %d",
+			len(sections),
+			typ.NumField(),
+		)
 	}
 }

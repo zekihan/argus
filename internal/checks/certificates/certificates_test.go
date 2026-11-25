@@ -33,7 +33,7 @@ func decode[T any](t *testing.T, value string) T {
 }
 
 // Fixtures from platform/cert-manager/tests/test_certificate_monitor.py.
-var monitorNow = time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+var monitorNow = time.Date(2026, time.October, 23, 0, 0, 0, 0, time.UTC)
 
 const rootJSON = `{"metadata":{"namespace":"cert-manager","name":"selfsigned-ca","uid":"root-uid","generation":2},
 "spec":{"isCA":true,"privateKey":{"rotationPolicy":"Never"}},
@@ -41,17 +41,26 @@ const rootJSON = `{"metadata":{"namespace":"cert-manager","name":"selfsigned-ca"
 "conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}`
 
 // publicFixture is ssl.DER_cert_to_PEM_cert(b"public-certificate-fixture").
-var publicFixture = "-----BEGIN CERTIFICATE-----\n" + base64.StdEncoding.EncodeToString([]byte("public-certificate-fixture")) + "\n-----END CERTIFICATE-----\n"
+var publicFixture = "-----BEGIN CERTIFICATE-----\n" + base64.StdEncoding.EncodeToString(
+	[]byte("public-certificate-fixture"),
+) + "\n-----END CERTIFICATE-----\n"
 
 func requestJSON(certificate string) string {
 	return `{"metadata":{"namespace":"cert-manager","annotations":{"cert-manager.io/certificate-revision":"2"},
 "ownerReferences":[{"kind":"Certificate","uid":"root-uid","controller":true}]},
-"status":{"certificate":"` + base64.StdEncoding.EncodeToString([]byte(certificate)) + `"}}`
+"status":{"certificate":"` + base64.StdEncoding.EncodeToString(
+		[]byte(certificate),
+	) + `"}}`
 }
 
 func pkiConfig() config.PKI {
 	sum := sha256.Sum256([]byte("public-certificate-fixture"))
-	c := config.PKI{RootSHA256: hex.EncodeToString(sum[:]), ExpectedCertificates: []config.NamespacedName{{Namespace: "cert-manager", Name: "selfsigned-ca"}}}
+	c := config.PKI{
+		RootSHA256: hex.EncodeToString(sum[:]),
+		ExpectedCertificates: []config.NamespacedName{
+			{Namespace: "cert-manager", Name: "selfsigned-ca"},
+		},
+	}
 	cfg := config.Config{Checks: config.Checks{PKI: &c}}
 	cfg.ApplyDefaults()
 	return *cfg.Checks.PKI
@@ -65,7 +74,13 @@ type pkiAPI struct {
 func (p *pkiAPI) Collect(context.Context) (PKISample, error) { return p.sample, p.err }
 
 func pkiHealthy(t *testing.T) PKISample {
-	return PKISample{Certificates: []Certificate{decode[Certificate](t, rootJSON)}, Requests: []CertificateRequest{decode[CertificateRequest](t, requestJSON(publicFixture))}}
+	t.Helper()
+	return PKISample{
+		Certificates: []Certificate{decode[Certificate](t, rootJSON)},
+		Requests: []CertificateRequest{
+			decode[CertificateRequest](t, requestJSON(publicFixture)),
+		},
+	}
 }
 
 // pkiVerdict is the /certificates parity: every per-certificate and
@@ -78,8 +93,17 @@ func pkiVerdict(t *testing.T, c config.PKI, s PKISample) (bool, *checktest.Harne
 }
 
 func rootPEM(t *testing.T, key *ecdsa.PrivateKey) string {
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "synthetic-ca"},
-		NotBefore: monitorNow.Add(-24 * time.Hour), NotAfter: monitorNow.Add(1800 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true}
+	t.Helper()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "synthetic-ca"},
+		NotBefore: monitorNow.Add(
+			-24 * time.Hour,
+		),
+		NotAfter:              monitorNow.Add(1800 * 24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +112,7 @@ func rootPEM(t *testing.T, key *ecdsa.PrivateKey) string {
 }
 
 func spki(t *testing.T, key *ecdsa.PrivateKey) string {
+	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +161,12 @@ func TestSameKeyRenewalIsAcceptedOnlyWithThePinnedPublicKey(t *testing.T) {
 	}
 	// A request carrying a private key is never a public trust anchor.
 	keyDER, _ := x509.MarshalECPrivateKey(key)
-	withKey := rootPEM(t, key) + string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	withKey := rootPEM(
+		t,
+		key,
+	) + string(
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+	)
 	renewed.Requests[0] = decode[CertificateRequest](t, requestJSON(withKey))
 	c.RootSPKI = spki(t, key)
 	if ok, h := pkiVerdict(t, c, renewed); ok {
@@ -293,7 +323,8 @@ func renewal(t *testing.T, certs ...Certificate) (int, map[string]string, *check
 	t.Helper()
 	root := decode[Certificate](t, rootJSON)
 	root.Spec.IssuerRef.Name = "selfsigned-ca-issuer"
-	h := checktest.New(NewRenewals(renewalsConfig(), &renewalsAPI{sample: Sample{Certificates: append([]Certificate{root}, certs...)}}), monitorNow).Refresh(t)
+	h := checktest.New(NewRenewals(renewalsConfig(), &renewalsAPI{sample: Sample{Certificates: append([]Certificate{root}, certs...)}}), monitorNow).
+		Refresh(t)
 	_, e := h.Get(t, Route)
 	if checktest.Parity(e, "ready", "renewal", "expiry", "inventory") {
 		return 200, e.Results, h
@@ -305,28 +336,41 @@ func TestRenewalEndpoint(t *testing.T) {
 	for _, issuer := range []string{"letsencrypt", "mtls-clients-v1"} {
 		cert := decode[Certificate](t, siteJSON)
 		cert.Spec.IssuerRef.Name = issuer
-		cert.Status.Conditions = []kube.Condition{{Type: "Ready", Status: "False", LastTransitionTime: "2026-10-22T22:59:59Z"}}
+		cert.Status.Conditions = []kube.Condition{
+			{Type: "Ready", Status: "False", LastTransitionTime: "2026-10-22T22:59:59Z"},
+		}
 		code, results, h := renewal(t, cert)
 		_, item := h.Get(t, Route+"/web/site")
-		if code != 503 || results["ready"] != "1 failing: web/site" || !strings.HasPrefix(item.Results["ready"], "not_ready(") {
+		if code != 503 || results["ready"] != "1 failing: web/site" ||
+			!strings.HasPrefix(item.Results["ready"], "not_ready(") {
 			t.Fatal(issuer, results, item.Results)
 		}
 	}
 	cert := decode[Certificate](t, siteJSON)
-	cert.Status.Conditions = []kube.Condition{{Type: "Ready", Status: "False", LastTransitionTime: "2026-10-22T23:30:00Z"}}
+	cert.Status.Conditions = []kube.Condition{
+		{Type: "Ready", Status: "False", LastTransitionTime: "2026-10-22T23:30:00Z"},
+	}
 	if code, results, _ := renewal(t, cert); code != 200 {
 		t.Fatal("not ready within the grace period paged", results)
 	}
 	cert = decode[Certificate](t, siteJSON)
 	overdue := "2026-10-21T23:59:59Z"
 	cert.Status.RenewalTime = &overdue
-	if code, results, _ := renewal(t, cert); code != 503 || results["renewal"] != "1 failing: web/site" {
+	if code, results, _ := renewal(
+		t,
+		cert,
+	); code != 503 ||
+		results["renewal"] != "1 failing: web/site" {
 		t.Fatal(results)
 	}
 	cert = decode[Certificate](t, siteJSON)
 	soon := "2026-11-05T00:00:00Z"
 	cert.Status.NotAfter = &soon
-	if code, results, _ := renewal(t, cert); code != 503 || results["expiry"] != "1 failing: web/site" {
+	if code, results, _ := renewal(
+		t,
+		cert,
+	); code != 503 ||
+		results["expiry"] != "1 failing: web/site" {
 		t.Fatal(results)
 	}
 	// The shared CA issuer belongs to the pki profile.
@@ -354,7 +398,11 @@ func TestCertificateReadinessGrace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cert := decode[Certificate](t, siteJSON)
 			timestamp := monitorNow.Add(-tc.age).Format(time.RFC3339)
-			condition := kube.Condition{Type: "Ready", Status: "False", LastTransitionTime: timestamp}
+			condition := kube.Condition{
+				Type:               "Ready",
+				Status:             "False",
+				LastTransitionTime: timestamp,
+			}
 			if tc.useCreation {
 				condition.LastTransitionTime = ""
 				cert.Metadata.CreationTimestamp = timestamp
@@ -369,12 +417,26 @@ func TestCertificateReadinessGrace(t *testing.T) {
 }
 
 func TestInvalidRenewalDataFailsOnlyThatCertificate(t *testing.T) {
-	cert := decode[Certificate](t, `{"metadata":{"namespace":"web","name":"site"},"spec":{"issuerRef":{"name":"letsencrypt"}},"status":null}`)
-	if code, results, _ := renewal(t, cert); code != 503 || results["ready"] != "1 failing: web/site" {
+	cert := decode[Certificate](
+		t,
+		`{"metadata":{"namespace":"web","name":"site"},"spec":{"issuerRef":{"name":"letsencrypt"}},"status":null}`,
+	)
+	if code, results, _ := renewal(
+		t,
+		cert,
+	); code != 503 ||
+		results["ready"] != "1 failing: web/site" {
 		t.Fatal(results)
 	}
 	// The pki profile is evaluated separately and stays healthy.
-	if ok, _ := pkiVerdict(t, pkiConfig(), PKISample{Certificates: append(pkiHealthy(t).Certificates, cert), Requests: pkiHealthy(t).Requests}); !ok {
+	if ok, _ := pkiVerdict(
+		t,
+		pkiConfig(),
+		PKISample{
+			Certificates: append(pkiHealthy(t).Certificates, cert),
+			Requests:     pkiHealthy(t).Requests,
+		},
+	); !ok {
 		t.Fatal("unrelated certificate failed the pki profile")
 	}
 }
@@ -382,15 +444,32 @@ func TestInvalidRenewalDataFailsOnlyThatCertificate(t *testing.T) {
 func TestIssuerAndRequestDetail(t *testing.T) {
 	cert := decode[Certificate](t, siteJSON)
 	cert.Spec.IssuerRef.Kind = "ClusterIssuer"
-	issuer := decode[Issuer](t, `{"metadata":{"name":"letsencrypt"},"status":{"conditions":[{"type":"Ready","status":"False","message":"acme account key=secret-acme"}]}}`)
-	failed := decode[CertificateRequest](t, `{"metadata":{"namespace":"web","annotations":{"cert-manager.io/certificate-revision":"3"},"ownerReferences":[{"kind":"Certificate","uid":"site-uid","controller":true}]},
-	"status":{"conditions":[{"type":"Ready","status":"False","reason":"Failed","message":"order failed: secret-acme"}]}}`)
-	older := decode[CertificateRequest](t, `{"metadata":{"namespace":"web","annotations":{"cert-manager.io/certificate-revision":"2"},"ownerReferences":[{"kind":"Certificate","uid":"site-uid","controller":true}]},
-	"status":{"conditions":[{"type":"Ready","status":"True"}]}}`)
-	api := &renewalsAPI{sample: Sample{Certificates: []Certificate{cert}, ClusterIssuers: []Issuer{issuer}, Requests: []CertificateRequest{older, failed}}}
+	issuer := decode[Issuer](
+		t,
+		`{"metadata":{"name":"letsencrypt"},"status":{"conditions":[{"type":"Ready","status":"False","message":"acme account key=secret-acme"}]}}`,
+	)
+	failed := decode[CertificateRequest](
+		t,
+		`{"metadata":{"namespace":"web","annotations":{"cert-manager.io/certificate-revision":"3"},"ownerReferences":[{"kind":"Certificate","uid":"site-uid","controller":true}]},
+	"status":{"conditions":[{"type":"Ready","status":"False","reason":"Failed","message":"order failed: secret-acme"}]}}`,
+	)
+	older := decode[CertificateRequest](
+		t,
+		`{"metadata":{"namespace":"web","annotations":{"cert-manager.io/certificate-revision":"2"},"ownerReferences":[{"kind":"Certificate","uid":"site-uid","controller":true}]},
+	"status":{"conditions":[{"type":"Ready","status":"True"}]}}`,
+	)
+	api := &renewalsAPI{
+		sample: Sample{
+			Certificates:   []Certificate{cert},
+			ClusterIssuers: []Issuer{issuer},
+			Requests:       []CertificateRequest{older, failed},
+		},
+	}
 	h := checktest.New(NewRenewals(renewalsConfig(), api), monitorNow).Refresh(t)
 	_, e := h.Get(t, Route+"/web/site")
-	if e.Results["issuer"] != "not_ready(letsencrypt)" || e.Results["request"] != "failed(revision 3)" || !checktest.Parity(e, "ready", "renewal", "expiry") {
+	if e.Results["issuer"] != "not_ready(letsencrypt)" ||
+		e.Results["request"] != "failed(revision 3)" ||
+		!checktest.Parity(e, "ready", "renewal", "expiry") {
 		t.Fatal(e.Results)
 	}
 	h.NoLeak(t, "secret-acme")
@@ -415,68 +494,79 @@ func TestExpectedCertificateMissing(t *testing.T) {
 
 // pki-lifecycle: tests/gitops/test_gitops_postgres_certificates.py.
 
-var lifecycleNow = time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+var lifecycleNow = time.Date(2026, time.October, 22, 0, 0, 0, 0, time.UTC)
 
 func lifecycleCert(t *testing.T, expiry, renewal string) Certificate {
-	return decode[Certificate](t, `{"metadata":{"name":"selfsigned-ca","namespace":"cert-manager"},"spec":{"isCA":true,"privateKey":{"rotationPolicy":"Never"}},
-	"status":{"notAfter":"`+expiry+`","renewalTime":"`+renewal+`","conditions":[{"type":"Ready","status":"True"}]}}`)
+	t.Helper()
+	return decode[Certificate](
+		t,
+		`{"metadata":{"name":"selfsigned-ca","namespace":"cert-manager"},"spec":{"isCA":true,"privateKey":{"rotationPolicy":"Never"}},
+	"status":{"notAfter":"`+expiry+`","renewalTime":"`+renewal+`","conditions":[{"type":"Ready","status":"True"}]}}`,
+	)
 }
 
 func defaultLifecycleCert(t *testing.T) Certificate {
+	t.Helper()
 	return lifecycleCert(t, "2031-10-22T00:00:00Z", "2030-10-22T00:00:00Z")
 }
 
 func itemResult(t *testing.T, certs []Certificate, dimension string) (bool, string) {
 	t.Helper()
 	e := Lifecycle(certs, lifecycleNow)
-	items, _ := Profile{RootNamespace: "cert-manager", RootName: "selfsigned-ca", IssuerName: "selfsigned-ca-issuer", LeafDays: 90, MarginDays: 30}.Assess(certs, lifecycleNow)
+	items, _ := Profile{
+		RootNamespace: "cert-manager",
+		RootName:      "selfsigned-ca",
+		IssuerName:    "selfsigned-ca-issuer",
+		LeafDays:      90,
+		MarginDays:    30,
+	}.Assess(
+		certs,
+		lifecycleNow,
+	)
 	if len(items) == 0 {
 		return e.Healthy, ""
 	}
 	return e.Healthy, items[0].Results[dimension]
 }
 
-func TestLifecycleProfile(t *testing.T) {
+// assertReadinessGenerationStale verifies mismatched generation reads stale.
+func assertReadinessGenerationStale(t *testing.T) {
+	t.Helper()
 	c := defaultLifecycleCert(t)
-	c.Spec.PrivateKey = nil
-	if healthy, got := itemResult(t, []Certificate{c}, "ca_key_pinned"); healthy || got != "not_pinned" {
-		t.Fatal("unpinned root", got)
-	}
-	c = defaultLifecycleCert(t)
 	g, one, two := int64(2), int64(1), int64(2)
 	c.Metadata.Generation = &g
-	c.Status.Conditions = []kube.Condition{{Type: "Ready", Status: "True", ObservedGeneration: &one}, {Type: "Ready", Status: "False", ObservedGeneration: &two}}
-	if healthy, got := itemResult(t, []Certificate{c}, "readiness_generation"); healthy || got != "stale(generation 2)" {
+	c.Status.Conditions = []kube.Condition{
+		{Type: "Ready", Status: "True", ObservedGeneration: &one},
+		{Type: "Ready", Status: "False", ObservedGeneration: &two},
+	}
+	if healthy, got := itemResult(
+		t,
+		[]Certificate{c},
+		"readiness_generation",
+	); healthy ||
+		got != "stale(generation 2)" {
 		t.Fatal("stale readiness generation", got)
 	}
-	other := defaultLifecycleCert(t)
-	other.Metadata.Name, other.Spec.IssuerRef.Name = "unrelated-intermediate", "selfsigned-ca-issuer"
-	if e := Lifecycle([]Certificate{other}, lifecycleNow); e.Healthy || e.Results["issuer_present"] != "issuer_certificate_missing" {
-		t.Fatal("another CA hid the missing root", e.Results)
-	}
-	if healthy, got := itemResult(t, []Certificate{lifecycleCert(t, "2031-10-22T00:00:00", "2030-10-22T00:00:00Z")}, "expiry"); healthy || got != "invalid_timestamp" {
-		t.Fatal("naive timestamp accepted", got)
-	}
-	if e := Lifecycle([]Certificate{defaultLifecycleCert(t)}, lifecycleNow); !e.Healthy {
-		t.Fatal("ready CA with headroom failed", e)
-	}
-	if healthy, got := itemResult(t, []Certificate{lifecycleCert(t, "2027-01-03T15:08:37Z", "2026-12-04T15:08:37Z")}, "issuer_lifetime"); healthy || !strings.HasPrefix(got, "insufficient(") {
+}
+
+// assertLifetimeGates verifies margin-aware issuer lifetime results.
+func assertLifetimeGates(t *testing.T) {
+	t.Helper()
+	if healthy, got := itemResult(
+		t,
+		[]Certificate{lifecycleCert(t, "2027-01-03T15:08:37Z", "2026-12-04T15:08:37Z")},
+		"issuer_lifetime",
+	); healthy ||
+		!strings.HasPrefix(got, "insufficient(") {
 		t.Fatal("short CA accepted", got)
 	}
-	if healthy, got := itemResult(t, []Certificate{lifecycleCert(t, "2031-10-22T00:00:00Z", "2026-11-01T00:00:00Z")}, "ca_renewal"); healthy || !strings.HasPrefix(got, "due(") {
+	if healthy, got := itemResult(
+		t,
+		[]Certificate{lifecycleCert(t, "2031-10-22T00:00:00Z", "2026-11-01T00:00:00Z")},
+		"ca_renewal",
+	); healthy ||
+		!strings.HasPrefix(got, "due(") {
 		t.Fatal("renewal gate", got)
-	}
-	if e := Lifecycle(nil, lifecycleNow); e.Healthy {
-		t.Fatal("empty snapshot passed")
-	}
-	c = defaultLifecycleCert(t)
-	c.Status = &CertificateStatus{}
-	if healthy, got := itemResult(t, []Certificate{c}, "expiry"); healthy || got != "unknown" {
-		t.Fatal("missing status passed", got)
-	}
-	acme := decode[Certificate](t, `{"metadata":{"name":"public-http","namespace":"web"},"spec":{"issuerRef":{"name":"letsencrypt"}},"status":{}}`)
-	if e := Lifecycle([]Certificate{defaultLifecycleCert(t), acme}, lifecycleNow); !e.Healthy {
-		t.Fatal("unrelated ACME certificate failed the database gate", e)
 	}
 	// The service profile's 90-day margin needs 180 days of root headroom; the
 	// CLI's 30-day margin needs 120.
@@ -485,9 +575,72 @@ func TestLifecycleProfile(t *testing.T) {
 		t.Fatal("CLI profile rejected 181 days")
 	}
 	cert = lifecycleCert(t, "2027-03-22T00:00:00Z", "2027-01-01T00:00:00Z") // 151 days left
-	service, _ := Profile{RootNamespace: "cert-manager", RootName: "selfsigned-ca", IssuerName: "selfsigned-ca-issuer", LeafDays: 90, MarginDays: 90}.Assess([]Certificate{cert}, lifecycleNow)
-	if !Lifecycle([]Certificate{cert}, lifecycleNow).Healthy || service[0].Results["issuer_lifetime"] == "ok" {
+	service, _ := Profile{
+		RootNamespace: "cert-manager",
+		RootName:      "selfsigned-ca",
+		IssuerName:    "selfsigned-ca-issuer",
+		LeafDays:      90,
+		MarginDays:    90,
+	}.Assess(
+		[]Certificate{cert},
+		lifecycleNow,
+	)
+	if !Lifecycle(
+		[]Certificate{cert},
+		lifecycleNow,
+	).Healthy ||
+		service[0].Results["issuer_lifetime"] == "ok" {
 		t.Fatal("margins not distinct", service[0].Results)
+	}
+}
+
+func TestLifecycleProfile(t *testing.T) {
+	c := defaultLifecycleCert(t)
+	c.Spec.PrivateKey = nil
+	if healthy, got := itemResult(
+		t,
+		[]Certificate{c},
+		"ca_key_pinned",
+	); healthy ||
+		got != "not_pinned" {
+		t.Fatal("unpinned root", got)
+	}
+	assertReadinessGenerationStale(t)
+	other := defaultLifecycleCert(t)
+	other.Metadata.Name, other.Spec.IssuerRef.Name = "unrelated-intermediate", "selfsigned-ca-issuer"
+	if e := Lifecycle(
+		[]Certificate{other},
+		lifecycleNow,
+	); e.Healthy ||
+		e.Results["issuer_present"] != "issuer_certificate_missing" {
+		t.Fatal("another CA hid the missing root", e.Results)
+	}
+	if healthy, got := itemResult(
+		t,
+		[]Certificate{lifecycleCert(t, "2031-10-22T00:00:00", "2030-10-22T00:00:00Z")},
+		"expiry",
+	); healthy ||
+		got != "invalid_timestamp" {
+		t.Fatal("naive timestamp accepted", got)
+	}
+	if e := Lifecycle([]Certificate{defaultLifecycleCert(t)}, lifecycleNow); !e.Healthy {
+		t.Fatal("ready CA with headroom failed", e)
+	}
+	assertLifetimeGates(t)
+	if e := Lifecycle(nil, lifecycleNow); e.Healthy {
+		t.Fatal("empty snapshot passed")
+	}
+	c = defaultLifecycleCert(t)
+	c.Status = &CertificateStatus{}
+	if healthy, got := itemResult(t, []Certificate{c}, "expiry"); healthy || got != "unknown" {
+		t.Fatal("missing status passed", got)
+	}
+	acme := decode[Certificate](
+		t,
+		`{"metadata":{"name":"public-http","namespace":"web"},"spec":{"issuerRef":{"name":"letsencrypt"}},"status":{}}`,
+	)
+	if e := Lifecycle([]Certificate{defaultLifecycleCert(t), acme}, lifecycleNow); !e.Healthy {
+		t.Fatal("unrelated ACME certificate failed the database gate", e)
 	}
 }
 
@@ -498,8 +651,13 @@ func TestExpectedCertificateUnderAnExcludedIssuerIsReported(t *testing.T) {
 	root.Spec.IssuerRef.Name = "selfsigned-ca-issuer"
 	root.Status.Conditions[0].Status = "False"
 	root.Status.Conditions[0].LastTransitionTime = "2026-10-01T00:00:00Z"
-	h := checktest.New(NewRenewals(c, &renewalsAPI{sample: Sample{Certificates: []Certificate{root}}}), monitorNow).Refresh(t)
-	if code, e := h.Get(t, Route+"/cert-manager/selfsigned-ca"); code != 503 || !strings.HasPrefix(e.Results["ready"], "not_ready") {
+	h := checktest.New(NewRenewals(c, &renewalsAPI{sample: Sample{Certificates: []Certificate{root}}}), monitorNow).
+		Refresh(t)
+	if code, e := h.Get(
+		t,
+		Route+"/cert-manager/selfsigned-ca",
+	); code != 503 ||
+		!strings.HasPrefix(e.Results["ready"], "not_ready") {
 		t.Fatal("expected certificate hidden by issuer exclusion", code, e.Results)
 	}
 }
@@ -524,7 +682,11 @@ func TestRootPinRequiresExactlyOneCertificate(t *testing.T) {
 
 func TestExpectedPKICertificatesHaveRoutes(t *testing.T) {
 	c := pkiConfig()
-	c.ExpectedCertificates = append(c.ExpectedCertificates, config.NamespacedName{Namespace: "db", Name: "gone"}, config.NamespacedName{Namespace: "web", Name: "other"})
+	c.ExpectedCertificates = append(
+		c.ExpectedCertificates,
+		config.NamespacedName{Namespace: "db", Name: "gone"},
+		config.NamespacedName{Namespace: "web", Name: "other"},
+	)
 	other := decode[Certificate](t, siteJSON)
 	other.Metadata.Name = "other"
 	s := pkiHealthy(t)
@@ -538,6 +700,10 @@ func TestExpectedPKICertificatesHaveRoutes(t *testing.T) {
 		t.Fatal(code, e.Results)
 	}
 	if code, e := h.Get(t, PKIRoute+"/web/other"); code != 200 || e.Results["ready"] != "n/a" {
-		t.Fatal("an expected certificate outside the shared CA is only checked for existence", code, e.Results)
+		t.Fatal(
+			"an expected certificate outside the shared CA is only checked for existence",
+			code,
+			e.Results,
+		)
 	}
 }

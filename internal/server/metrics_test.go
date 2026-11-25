@@ -13,7 +13,8 @@ import (
 func scrape(t *testing.T, reg *metrics.Registry) string {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	reg.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	reg.Handler().
+		ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("metrics scrape = %d, want 200", recorder.Code)
 	}
@@ -26,7 +27,7 @@ func scrape(t *testing.T, reg *metrics.Registry) string {
 
 func get(t *testing.T, handler http.Handler, path, token string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -42,7 +43,12 @@ func TestHandlerRecordsRequestsByRouteFamily(t *testing.T) {
 	if recorder := get(t, handler, "/healthz", ""); recorder.Code != http.StatusOK {
 		t.Fatalf("healthz = %d, want 200", recorder.Code)
 	}
-	if recorder := get(t, handler, "/v1/things/ns/a", testToken); recorder.Code != http.StatusServiceUnavailable {
+	if recorder := get(
+		t,
+		handler,
+		"/v1/things/ns/a",
+		testToken,
+	); recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("collection = %d, want 503", recorder.Code)
 	}
 	if recorder := get(t, handler, "/v1/checks", testToken); recorder.Code != http.StatusOK {

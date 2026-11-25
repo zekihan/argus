@@ -1,8 +1,9 @@
 package runner
 
 import (
-	"github.com/zekihan/argus/internal/result"
 	"github.com/zekihan/go-commons/metrics"
+
+	"github.com/zekihan/argus/internal/result"
 )
 
 // collectionHealthy is the per-collection health gauge served on /metrics.

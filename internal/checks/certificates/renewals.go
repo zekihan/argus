@@ -15,7 +15,7 @@ const Route = "certificates"
 
 // ready, renewal and expiry are certificate_monitor.py's /renewals rules;
 // issuer and request are new detail.
-var dimensions = []string{"ready", "renewal", "expiry", "issuer", "request"}
+var dimensions = []string{dimensionReady, "renewal", "expiry", "issuer", "request"}
 
 type Sample struct {
 	Certificates   []Certificate
@@ -38,13 +38,28 @@ func (a API) Collect(ctx context.Context) (Sample, error) {
 	if s.Certificates, err = ListCertificates(ctx, a.Client); err != nil {
 		return Sample{}, err
 	}
-	if s.Requests, err = kube.List[CertificateRequest](ctx, a.Client, "/apis/cert-manager.io/v1/certificaterequests", ""); err != nil {
+	if s.Requests, err = kube.List[CertificateRequest](
+		ctx,
+		a.Client,
+		"/apis/cert-manager.io/v1/certificaterequests",
+		"",
+	); err != nil {
 		return Sample{}, err
 	}
-	if s.Issuers, err = kube.List[Issuer](ctx, a.Client, "/apis/cert-manager.io/v1/issuers", ""); err != nil {
+	if s.Issuers, err = kube.List[Issuer](
+		ctx,
+		a.Client,
+		"/apis/cert-manager.io/v1/issuers",
+		"",
+	); err != nil {
 		return Sample{}, err
 	}
-	if s.ClusterIssuers, err = kube.List[Issuer](ctx, a.Client, "/apis/cert-manager.io/v1/clusterissuers", ""); err != nil {
+	if s.ClusterIssuers, err = kube.List[Issuer](
+		ctx,
+		a.Client,
+		"/apis/cert-manager.io/v1/clusterissuers",
+		"",
+	); err != nil {
 		return Sample{}, err
 	}
 	return s, nil
@@ -71,7 +86,10 @@ func (r *Renewals) Describe() []result.Collection {
 	return []result.Collection{collection}
 }
 
-func (r *Renewals) Collect(ctx context.Context, clock func() time.Time) ([]result.Collection, error) {
+func (r *Renewals) Collect(
+	ctx context.Context,
+	clock func() time.Time,
+) ([]result.Collection, error) {
 	sample, err := r.api.Collect(ctx)
 	if err != nil {
 		return nil, err
@@ -112,21 +130,77 @@ func (r *Renewals) Evaluate(s Sample, now time.Time) result.Collection {
 	for _, expected := range r.config.Expected {
 		if !present[expected.Key()] {
 			missing = append(missing, expected.Key())
-			results := map[string]string{"ready": result.Reason("missing")}
+			results := map[string]string{dimensionReady: result.Reason("missing")}
 			for _, dim := range dimensions[1:] {
 				results[dim] = result.NA
 			}
-			collection.Items = append(collection.Items, result.Item{Target: expected.Key(), Results: results, Values: map[string]any{}})
+			collection.Items = append(
+				collection.Items,
+				result.Item{Target: expected.Key(), Results: results, Values: map[string]any{}},
+			)
 		}
 	}
-	sort.Slice(collection.Items, func(i, j int) bool { return collection.Items[i].Target < collection.Items[j].Target })
+	sort.Slice(
+		collection.Items,
+		func(i, j int) bool { return collection.Items[i].Target < collection.Items[j].Target },
+	)
 	collection.Results = map[string]string{"inventory": result.Inventory(missing, nil)}
 	return collection
 }
 
-func (r *Renewals) certificate(cert Certificate, requests []CertificateRequest, issuers map[string]Issuer, now time.Time) result.Item {
+// renewalResult maps a renewal time to the renewal dimension result.
+// The formatted time is empty when the time cannot be parsed.
+func (r *Renewals) renewalResult(raw string, now time.Time) (string, string) {
+	renewal, err := kube.ParseTime(raw)
+	if err != nil {
+		return result.Reason("invalid_timestamp"), ""
+	}
+	if now.Sub(renewal) > time.Duration(r.config.RenewalOverdueSeconds)*time.Second {
+		return result.Reason(
+			"overdue",
+			result.Labeled("since", result.Dur(now.Sub(renewal).Seconds())),
+		), ""
+	}
+	return result.OK, renewal.Format(time.RFC3339)
+}
+
+// expiryResult maps a NotAfter time to the expiry dimension result.
+func (r *Renewals) expiryResult(raw string, now time.Time) (string, string, float64) {
+	notAfter, err := kube.ParseTime(raw)
+	if err != nil {
+		return result.Reason("invalid_timestamp"), "", 0
+	}
+	switch {
+	case notAfter.Sub(now) <= 0:
+		return result.Reason(
+				"expired",
+			), notAfter.Format(
+				time.RFC3339,
+			), notAfter.Sub(now).
+				Hours() /
+				24
+	case notAfter.Sub(now) <= time.Duration(r.config.ExpiryDays)*day:
+		return result.Reason(
+			"expires_soon",
+			result.Labeled("left", result.Days(notAfter.Sub(now).Hours()/24)),
+		), notAfter.Format(time.RFC3339), notAfter.Sub(now).Hours() / 24
+	default:
+		return result.OK, notAfter.Format(time.RFC3339), notAfter.Sub(now).Hours() / 24
+	}
+}
+
+func (r *Renewals) certificate(
+	cert Certificate,
+	requests []CertificateRequest,
+	issuers map[string]Issuer,
+	now time.Time,
+) result.Item {
 	status := cert.status()
-	results := map[string]string{"ready": result.OK, "renewal": result.NA, "expiry": result.NA}
+	results := map[string]string{
+		dimensionReady: result.OK,
+		"renewal":      result.NA,
+		"expiry":       result.NA,
+	}
 	values := map[string]any{"issuer": result.SafeName(cert.Spec.IssuerRef.Name)}
 	if status.Revision != nil {
 		values["revision"] = *status.Revision
@@ -134,8 +208,8 @@ func (r *Renewals) certificate(cert Certificate, requests []CertificateRequest, 
 	// Not ready for longer than the grace period; the transition defaults to
 	// the certificate's creation, as in certificate_monitor.py.
 	ready, found := kube.FindCondition(status.Conditions, "Ready")
-	values["ready"] = found && ready.Status == "True"
-	if !found || ready.Status != "True" {
+	values[dimensionReady] = found && ready.Status == conditionTrue
+	if !found || ready.Status != conditionTrue {
 		transition := ready.LastTransitionTime
 		if transition == "" {
 			transition = cert.Metadata.CreationTimestamp
@@ -144,40 +218,22 @@ func (r *Renewals) certificate(cert Certificate, requests []CertificateRequest, 
 		age := now.Sub(since)
 		switch {
 		case err != nil || age < 0:
-			results["ready"] = result.Reason("not_ready")
+			results[dimensionReady] = result.Reason("not_ready")
 		case age > time.Duration(r.config.NotReadySeconds)*time.Second:
-			results["ready"] = result.Reason("not_ready", result.Labeled("for", result.Dur(age.Seconds())))
+			results[dimensionReady] = result.Reason(
+				"not_ready",
+				result.Labeled("for", result.Dur(age.Seconds())),
+			)
 		}
 	}
 	if status.RenewalTime != nil && *status.RenewalTime != "" {
-		renewal, err := kube.ParseTime(*status.RenewalTime)
-		switch {
-		case err != nil:
-			results["renewal"] = result.Reason("invalid_timestamp")
-		case now.Sub(renewal) > time.Duration(r.config.RenewalOverdueSeconds)*time.Second:
-			results["renewal"] = result.Reason("overdue", result.Labeled("since", result.Dur(now.Sub(renewal).Seconds())))
-		default:
-			results["renewal"] = result.OK
-		}
-		if err == nil {
-			values["renewalTime"] = renewal.Format(time.RFC3339)
-		}
+		results["renewal"], values["renewalTime"] = r.renewalResult(*status.RenewalTime, now)
 	}
 	if status.NotAfter != nil && *status.NotAfter != "" {
-		notAfter, err := kube.ParseTime(*status.NotAfter)
-		switch {
-		case err != nil:
-			results["expiry"] = result.Reason("invalid_timestamp")
-		case notAfter.Sub(now) <= 0:
-			results["expiry"] = result.Reason("expired")
-		case notAfter.Sub(now) <= time.Duration(r.config.ExpiryDays)*day:
-			results["expiry"] = result.Reason("expires_soon", result.Labeled("left", result.Days(notAfter.Sub(now).Hours()/24)))
-		default:
-			results["expiry"] = result.OK
-		}
-		if err == nil {
-			values["notAfter"], values["daysRemaining"] = notAfter.Format(time.RFC3339), notAfter.Sub(now).Hours()/24
-		}
+		results["expiry"], values["notAfter"], values["daysRemaining"] = r.expiryResult(
+			*status.NotAfter,
+			now,
+		)
 	}
 	results["issuer"] = issuerResult(cert, issuers)
 	results["request"] = requestResult(cert, requests)
@@ -213,10 +269,15 @@ func requestResult(cert Certificate, requests []CertificateRequest) string {
 	latestRevision := int64(-1)
 	for i := range requests {
 		request := &requests[i]
-		if request.Metadata.Namespace != cert.Metadata.Namespace || !kube.OwnedBy(request.Metadata, "Certificate", cert.Metadata.UID) {
+		if request.Metadata.Namespace != cert.Metadata.Namespace ||
+			!kube.OwnedBy(request.Metadata, "Certificate", cert.Metadata.UID) {
 			continue
 		}
-		revision, err := strconv.ParseInt(request.Metadata.Annotations["cert-manager.io/certificate-revision"], 10, 64)
+		revision, err := strconv.ParseInt(
+			request.Metadata.Annotations["cert-manager.io/certificate-revision"],
+			10,
+			64,
+		)
 		if err != nil {
 			revision = 0
 		}
@@ -234,7 +295,11 @@ func requestResult(cert Certificate, requests []CertificateRequest) string {
 	case kube.ConditionTrue(conditions, "InvalidRequest"):
 		return result.Reason("invalid", result.Labeled("revision", result.Int(latestRevision)))
 	}
-	if ready, ok := kube.FindCondition(conditions, "Ready"); ok && ready.Status == "False" && ready.Reason == "Failed" {
+	if ready, ok := kube.FindCondition(
+		conditions,
+		"Ready",
+	); ok && ready.Status == "False" &&
+		ready.Reason == "Failed" {
 		return result.Reason("failed", result.Labeled("revision", result.Int(latestRevision)))
 	}
 	return result.OK

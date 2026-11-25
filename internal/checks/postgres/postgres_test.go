@@ -10,7 +10,7 @@ import (
 	"github.com/zekihan/argus/internal/config"
 )
 
-var now = time.Date(2026, 11, 7, 15, 0, 0, 0, time.UTC)
+var now = time.Date(2026, time.November, 7, 15, 0, 0, 0, time.UTC)
 
 // clusterJSON mirrors a live PGO v5 PostgresCluster status.
 const clusterJSON = `{"metadata":{"namespace":"db","name":"db","uid":"u"},
@@ -42,6 +42,7 @@ func (f *fakeAPI) Collect(context.Context) ([]Cluster, error) { return f.cluster
 var cfg = config.Postgres{Clusters: []config.NamespacedName{{Namespace: "db", Name: "db"}}}
 
 func run(t *testing.T, clusters ...Cluster) (*checktest.Harness, map[string]string) {
+	t.Helper()
 	h := checktest.New(New(cfg, &fakeAPI{clusters: clusters}), now).Refresh(t)
 	_, e := h.Get(t, Route+"/db/db")
 	return h, e.Results
@@ -121,7 +122,13 @@ func TestScheduledBackupTimestampAgainstCollectionTime(t *testing.T) {
 			h, results := run(t, cluster)
 			code, _ := h.Get(t, Route)
 			if got := results["scheduled_backups"]; got != tc.want || code != tc.status {
-				t.Fatalf("scheduled_backups = %q, aggregate status = %d, want %q and %d", got, code, tc.want, tc.status)
+				t.Fatalf(
+					"scheduled_backups = %q, aggregate status = %d, want %q and %d",
+					got,
+					code,
+					tc.want,
+					tc.status,
+				)
 			}
 		})
 	}
@@ -134,7 +141,11 @@ func TestInventoryDriftBothWays(t *testing.T) {
 	if r["instances"] != "missing" {
 		t.Fatal(r)
 	}
-	if code, e := h.Get(t, Route); code != 503 || e.Results["inventory"] != "missing(1): db/db; unexpected(1): app/app" {
+	if code, e := h.Get(
+		t,
+		Route,
+	); code != 503 ||
+		e.Results["inventory"] != "missing(1): db/db; unexpected(1): app/app" {
 		t.Fatal(e.Results)
 	}
 }

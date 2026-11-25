@@ -6,10 +6,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/zekihan/go-commons/metrics"
+
 	"github.com/zekihan/argus/internal/config"
 	"github.com/zekihan/argus/internal/kube"
 	"github.com/zekihan/argus/internal/runner"
-	"github.com/zekihan/go-commons/metrics"
 )
 
 // Deps are the shared dependencies of every check.
@@ -47,7 +48,17 @@ func Build(cfg config.Config, deps Deps) ([]Built, error) {
 			return nil, fmt.Errorf("check %s: %w", enabled.Name, err)
 		}
 		interval, timeout, maxAge := cfg.Timing(enabled.Schedule)
-		out = append(out, Built{Check: check, Timing: runner.Timing{Interval: seconds(interval), Timeout: seconds(timeout), MaxAge: seconds(maxAge)}})
+		out = append(
+			out,
+			Built{
+				Check: check,
+				Timing: runner.Timing{
+					Interval: seconds(interval),
+					Timeout:  seconds(timeout),
+					MaxAge:   seconds(maxAge),
+				},
+			},
+		)
 	}
 	return out, nil
 }

@@ -15,7 +15,18 @@ import (
 
 const Route = "nodes"
 
-var dimensions = []string{"ready", "memory_pressure", "disk_pressure", "pid_pressure", "network", "schedulable", "kubelet_version", "cpu", "memory", "longhorn_disk"}
+var dimensions = []string{
+	"ready",
+	"memory_pressure",
+	"disk_pressure",
+	"pid_pressure",
+	"network",
+	"schedulable",
+	"kubelet_version",
+	"cpu",
+	"memory",
+	"longhorn_disk",
+}
 
 type Node struct {
 	Metadata kube.Metadata `json:"metadata"`
@@ -88,12 +99,22 @@ func (a API) Collect(ctx context.Context) (Sample, error) {
 	}
 	s.ServerVersion = version.GitVersion
 	if a.Metrics {
-		if s.Metrics, err = kube.List[NodeMetrics](ctx, a.Client, "/apis/metrics.k8s.io/v1beta1/nodes", ""); err != nil {
+		if s.Metrics, err = kube.List[NodeMetrics](
+			ctx,
+			a.Client,
+			"/apis/metrics.k8s.io/v1beta1/nodes",
+			"",
+		); err != nil {
 			return Sample{}, err
 		}
 	}
 	if a.LonghornNamespace != "" {
-		if s.Longhorn, err = kube.List[LonghornNode](ctx, a.Client, "/apis/longhorn.io/v1beta2/namespaces/"+a.LonghornNamespace+"/nodes", ""); err != nil {
+		if s.Longhorn, err = kube.List[LonghornNode](
+			ctx,
+			a.Client,
+			"/apis/longhorn.io/v1beta2/namespaces/"+a.LonghornNamespace+"/nodes",
+			"",
+		); err != nil {
 			return Sample{}, err
 		}
 	}
@@ -157,7 +178,10 @@ func (c *Check) Evaluate(s Sample, now time.Time) result.Collection {
 			for _, dim := range dimensions[1:] {
 				results[dim] = result.NA
 			}
-			collection.Items = append(collection.Items, result.Item{Target: name, Results: results, Values: map[string]any{}})
+			collection.Items = append(
+				collection.Items,
+				result.Item{Target: name, Results: results, Values: map[string]any{}},
+			)
 			continue
 		}
 		collection.Items = append(collection.Items, c.node(node, s, metrics, longhorn, now))
@@ -186,11 +210,20 @@ func condition(conditions []kube.Condition, kind, healthy, failing string) strin
 	return result.Reason(failing)
 }
 
-func (c *Check) node(node Node, s Sample, metrics map[string]NodeMetrics, longhorn map[string]LonghornNode, now time.Time) result.Item {
+func (c *Check) node(
+	node Node,
+	s Sample,
+	metrics map[string]NodeMetrics,
+	longhorn map[string]LonghornNode,
+	now time.Time,
+) result.Item {
 	name := node.Metadata.Name
 	conds := node.Status.Conditions
 	persist := time.Duration(c.config.PersistSeconds) * time.Second
-	values := map[string]any{"kubeletVersion": result.SafeName(node.Status.NodeInfo.KubeletVersion), "observedSinceSeconds": c.seen.Observed(now).Seconds()}
+	values := map[string]any{
+		"kubeletVersion":       result.SafeName(node.Status.NodeInfo.KubeletVersion),
+		"observedSinceSeconds": c.seen.Observed(now).Seconds(),
+	}
 	results := map[string]string{
 		"ready":           condition(conds, "Ready", "True", "not_ready"),
 		"memory_pressure": condition(conds, "MemoryPressure", "False", "pressure"),
@@ -210,7 +243,10 @@ func (c *Check) node(node Node, s Sample, metrics map[string]NodeMetrics, longho
 	if node.Spec.Unschedulable {
 		values["cordonedObservedSeconds"] = cordoned.Seconds()
 		if cordoned > persist {
-			results["schedulable"] = result.Reason("cordoned", result.Labeled("for", result.Dur(cordoned.Seconds())))
+			results["schedulable"] = result.Reason(
+				"cordoned",
+				result.Labeled("for", result.Dur(cordoned.Seconds())),
+			)
 		}
 	}
 	skewed := node.Status.NodeInfo.KubeletVersion != s.ServerVersion
@@ -220,8 +256,15 @@ func (c *Check) node(node Node, s Sample, metrics map[string]NodeMetrics, longho
 	if skewed {
 		values["skewObservedSeconds"] = skew.Seconds()
 		if skew > persist {
-			results["kubelet_version"] = result.Reason("skewed", result.Name(node.Status.NodeInfo.KubeletVersion),
-				result.Labeled("control_plane", result.Name(s.ServerVersion)), result.Labeled("for", result.Dur(skew.Seconds())))
+			results["kubelet_version"] = result.Reason(
+				"skewed",
+				result.Name(node.Status.NodeInfo.KubeletVersion),
+				result.Labeled(
+					"control_plane",
+					result.Name(s.ServerVersion),
+				),
+				result.Labeled("for", result.Dur(skew.Seconds())),
+			)
 		}
 	}
 	results["cpu"], results["memory"] = result.NA, result.NA
@@ -230,8 +273,22 @@ func (c *Check) node(node Node, s Sample, metrics map[string]NodeMetrics, longho
 		if fresh := metricsFreshness(m, ok, now, values); fresh != result.OK {
 			results["cpu"], results["memory"] = fresh, fresh
 		} else {
-			results["cpu"] = usage(m.Usage["cpu"], node.Status.Allocatable["cpu"], ok, c.config.CPUPercent, "cpu", values)
-			results["memory"] = usage(m.Usage["memory"], node.Status.Allocatable["memory"], ok, c.config.MemoryPercent, "memory", values)
+			results["cpu"] = usage(
+				m.Usage["cpu"],
+				node.Status.Allocatable["cpu"],
+				ok,
+				c.config.CPUPercent,
+				"cpu",
+				values,
+			)
+			results["memory"] = usage(
+				m.Usage["memory"],
+				node.Status.Allocatable["memory"],
+				ok,
+				c.config.MemoryPercent,
+				"memory",
+				values,
+			)
 		}
 	}
 	results["longhorn_disk"] = result.NA
@@ -255,12 +312,22 @@ func metricsFreshness(m NodeMetrics, found bool, now time.Time, values map[strin
 	case age < -time.Minute:
 		return result.Reason("metrics_invalid")
 	case age > metricsMaxAge:
-		return result.Reason("metrics_stale", result.Labeled("age", result.Dur(age.Seconds())), result.Labeled("max", result.Dur(metricsMaxAge.Seconds())))
+		return result.Reason(
+			"metrics_stale",
+			result.Labeled("age", result.Dur(age.Seconds())),
+			result.Labeled("max", result.Dur(metricsMaxAge.Seconds())),
+		)
 	}
 	return result.OK
 }
 
-func usage(used, allocatable string, found bool, threshold int, resource string, values map[string]any) string {
+func usage(
+	used, allocatable string,
+	found bool,
+	threshold int,
+	resource string,
+	values map[string]any,
+) string {
 	if !found {
 		return result.Reason("metrics_missing")
 	}
@@ -272,7 +339,11 @@ func usage(used, allocatable string, found bool, threshold int, resource string,
 	percent := u / a * 100
 	values[resource+"Usage"], values[resource+"Allocatable"], values[resource+"Percent"] = u, a, percent
 	if percent > float64(threshold) {
-		return result.Reason("high", result.Pct(percent), result.Labeled("max", result.Pct(float64(threshold))))
+		return result.Reason(
+			"high",
+			result.Pct(percent),
+			result.Labeled("max", result.Pct(float64(threshold))),
+		)
 	}
 	return result.OK
 }
@@ -311,7 +382,12 @@ func (c *Check) longhornDisk(l LonghornNode, values map[string]any) string {
 		}
 		free := float64(disk.StorageAvailable) / float64(disk.StorageMaximum) * 100
 		if free < float64(c.config.LonghornMinAvailablePercent) {
-			return result.Reason("low_space", result.Name(name), result.Labeled("free", result.Pct(free)), result.Labeled("min", result.Pct(float64(c.config.LonghornMinAvailablePercent))))
+			return result.Reason(
+				"low_space",
+				result.Name(name),
+				result.Labeled("free", result.Pct(free)),
+				result.Labeled("min", result.Pct(float64(c.config.LonghornMinAvailablePercent))),
+			)
 		}
 	}
 	if maximum > 0 {

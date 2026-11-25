@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"maps"
 	"os"
@@ -40,11 +39,14 @@ func (f *fakeAPI) set(update func(*Sample)) {
 	update(&f.sample)
 }
 
-var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
+var discard = slog.New(slog.DiscardHandler)
 
 func harness(check *Check) *runner.Runner {
 	r := runner.New(discard, "test", nil, 3*time.Minute)
-	r.Add(check, runner.Timing{Interval: time.Minute, Timeout: 5 * time.Second, MaxAge: 180 * time.Second})
+	r.Add(
+		check,
+		runner.Timing{Interval: time.Minute, Timeout: 5 * time.Second, MaxAge: 180 * time.Second},
+	)
 	return r
 }
 
@@ -64,11 +66,13 @@ func lookup(t *testing.T, r *runner.Runner, key string, now time.Time) (int, res
 
 // liveCluster is testCluster with recent, wall-clock-valid timestamps.
 func liveCluster(t *testing.T) kube.Cluster {
+	t.Helper()
 	cluster := testCluster(t)
 	now := time.Now().UTC()
 	cluster.Metadata.CreationTimestamp = now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
 	for i := range cluster.Status.PGBackRest.ScheduledBackups {
-		cluster.Status.PGBackRest.ScheduledBackups[i].CompletionTime = now.Add(-time.Hour).Format(time.RFC3339Nano)
+		cluster.Status.PGBackRest.ScheduledBackups[i].CompletionTime = now.Add(-time.Hour).
+			Format(time.RFC3339Nano)
 	}
 	return withStanzas(cluster)
 }
@@ -104,7 +108,13 @@ func TestRestartRecoveryAndFailedCollection(t *testing.T) {
 	}
 	api.set(func(s *Sample) { api.err = errors.New("sensitive response body and credentials") })
 	r.Refresh(t.Context(), "pgbackrest")
-	if code, e := lookup(t, r, "", time.Now()); code != 503 || strings.Contains(e.Summary, "sensitive") || e.Results["collection"] != "collection_error" {
+	if code, e := lookup(
+		t,
+		r,
+		"",
+		time.Now(),
+	); code != 503 || strings.Contains(e.Summary, "sensitive") ||
+		e.Results["collection"] != "collection_error" {
 		t.Fatal(code, e)
 	}
 	cluster.Status.PGBackRest.ScheduledBackups = nil
@@ -127,19 +137,36 @@ func TestRestartRecoveryAndFailedCollection(t *testing.T) {
 func TestCachedAgeAndSampleExpire(t *testing.T) {
 	cluster := liveCluster(t)
 	now := time.Now().UTC()
-	cluster.Status.PGBackRest.ScheduledBackups[0].CompletionTime = now.Add(-28799 * time.Second).Format(time.RFC3339Nano)
+	cluster.Status.PGBackRest.ScheduledBackups[0].CompletionTime = now.Add(-28799 * time.Second).
+		Format(time.RFC3339Nano)
 	_, store := memoryStore(emptyLedger)
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{cluster}}}, store, false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{cluster}}},
+			store,
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
-	if code, e := lookup(t, r, "db/db/repo2", time.Now()); code != 200 || e.Values["ageSeconds"].(float64) < 3600 {
+	code, e := lookup(t, r, "db/db/repo2", time.Now())
+	age, hasAge := e.Values["ageSeconds"].(float64)
+	if code != 200 || !hasAge || age < 3600 {
 		t.Fatal(code, e)
 	}
 	later := time.Now().Add(2 * time.Second)
-	code, e := lookup(t, r, "db/db/repo1", later)
+	code, e = lookup(t, r, "db/db/repo1", later)
 	if code != 503 || !strings.HasPrefix(e.Results["freshness"], "backup_stale(") {
 		t.Fatal("cached success stayed green", code, e)
 	}
-	if code, e := lookup(t, r, "", time.Now().Add(181*time.Second)); code != 503 || !strings.HasPrefix(e.Results["collection"], "stale(") {
+	if code, e := lookup(
+		t,
+		r,
+		"",
+		time.Now().Add(181*time.Second),
+	); code != 503 ||
+		!strings.HasPrefix(e.Results["collection"], "stale(") {
 		t.Fatal("sample stayed green", code, e)
 	}
 	if code, _ := r.Lookup(Route+"/db/db/repo4", time.Now()); code != 404 {
@@ -150,10 +177,20 @@ func TestCachedAgeAndSampleExpire(t *testing.T) {
 func TestPersistenceFailureDoesNotPublishSuccess(t *testing.T) {
 	backend, store := memoryStore(emptyLedger)
 	backend.BeforeWrite = func(int) error { return &kube.Error{Code: kube.CodeHTTP, Status: 500, Path: "x"} }
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, store, false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+			store,
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
 	code, e := lookup(t, r, "db/db/repo1", time.Now())
-	if code != 503 || e.Results["state"] != "unpersisted" || e.Results["freshness"] != result.Pending || backend.Data() != emptyLedger {
+	if code != 503 || e.Results["state"] != "unpersisted" ||
+		e.Results["freshness"] != result.Pending ||
+		backend.Data() != emptyLedger {
 		t.Fatal("failed write was published", code, e)
 	}
 }
@@ -184,17 +221,39 @@ func TestCachedCompletionFailsClosedDuringClockRollback(t *testing.T) {
 	cluster := liveCluster(t)
 	completed := time.Now().UTC().Add(-5 * time.Second)
 	for i := range cluster.Status.PGBackRest.ScheduledBackups {
-		cluster.Status.PGBackRest.ScheduledBackups[i].CompletionTime = completed.Format(time.RFC3339Nano)
+		cluster.Status.PGBackRest.ScheduledBackups[i].CompletionTime = completed.Format(
+			time.RFC3339Nano,
+		)
 	}
 	_, store := memoryStore(emptyLedger)
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{cluster}}}, store, false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{cluster}}},
+			store,
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
 	// A wall clock rollback makes the cached completion future while the sample is fresh.
 	rollback := completed.Add(-time.Second)
-	if code, e := lookup(t, r, "db/db/repo1", rollback); code != 503 || e.Results["evidence"] != "invalid_timestamp" {
+	if code, e := lookup(
+		t,
+		r,
+		"db/db/repo1",
+		rollback,
+	); code != 503 ||
+		e.Results["evidence"] != "invalid_timestamp" {
 		t.Errorf("future cached completion reported healthy: %d %+v", code, e)
 	}
-	if code, e := lookup(t, r, "", rollback); code != 503 || e.Results["evidence"] != "2 failing: db/db/repo1, db/db/repo2" {
+	if code, e := lookup(
+		t,
+		r,
+		"",
+		rollback,
+	); code != 503 ||
+		e.Results["evidence"] != "2 failing: db/db/repo1, db/db/repo2" {
 		t.Errorf("aggregate accepted future cached completion: %d %+v", code, e)
 	}
 	if code, e := lookup(t, r, "", time.Now()); code != 200 {
@@ -249,7 +308,9 @@ func TestInvalidationsSurviveFailedCheckpoints(t *testing.T) {
 			disk.fail = true
 			switch kind {
 			case "destination":
-				api.sample.Clusters[0].Spec.Backups.PGBackRest.Global = map[string]string{"repo1-path": "/changed"}
+				api.sample.Clusters[0].Spec.Backups.PGBackRest.Global = map[string]string{
+					"repo1-path": "/changed",
+				}
 			case "repository":
 				api.sample.Clusters[0].Spec.Backups.PGBackRest.Repos = api.sample.Clusters[0].Spec.Backups.PGBackRest.Repos[1:]
 			case "cluster":
@@ -269,7 +330,9 @@ func TestInvalidationsSurviveFailedCheckpoints(t *testing.T) {
 			// The original destination and retained old evidence reappear before recovery.
 			api.sample.Clusters = []kube.Cluster{original}
 			oldJob := testJob(t)
-			oldJob.Metadata.CreationTimestamp = time.Now().Add(-2 * time.Hour).Format(time.RFC3339Nano)
+			oldJob.Metadata.CreationTimestamp = time.Now().
+				Add(-2 * time.Hour).
+				Format(time.RFC3339Nano)
 			oldJob.Status.CompletionTime = time.Now().Add(-time.Hour).Format(time.RFC3339Nano)
 			api.sample.Jobs = []kube.Job{oldJob}
 			r.Refresh(t.Context(), "pgbackrest")
@@ -282,7 +345,15 @@ func TestInvalidationsSurviveFailedCheckpoints(t *testing.T) {
 				t.Fatal("old completion survived invalidation", entry)
 			}
 			// Recovery writes a valid barrier ledger, which also survives restart.
-			restarted := harness(New(testConfig(), api, state.New(state.NewMemory(disk.backend.Data(), true)), false, discard))
+			restarted := harness(
+				New(
+					testConfig(),
+					api,
+					state.New(state.NewMemory(disk.backend.Data(), true)),
+					false,
+					discard,
+				),
+			)
 			restarted.Refresh(t.Context(), "pgbackrest")
 			requireRepositoryStatus(t, restarted, 503)
 			// A backup created after the recovered barrier can make this destination healthy.
@@ -319,13 +390,22 @@ func TestFailedCheckpointPreservesOnlyCommittedSuccess(t *testing.T) {
 	r.Refresh(t.Context(), "pgbackrest")
 	old := disk.entries(t)["db/db/repo1"]
 	disk.fail = true
-	api.sample.Clusters[0].Status.PGBackRest.ScheduledBackups[0].CompletionTime = time.Now().Add(-time.Minute).Format(time.RFC3339Nano)
+	api.sample.Clusters[0].Status.PGBackRest.ScheduledBackups[0].CompletionTime = time.Now().
+		Add(-time.Minute).
+		Format(time.RFC3339Nano)
 	r.Refresh(t.Context(), "pgbackrest")
 	requireRepositoryStatus(t, r, 503)
 	if check.ledger["db/db/repo1"] != old {
 		t.Fatal("uncommitted success replaced ledger evidence")
 	}
-	if _, e := lookup(t, r, "db/db/repo1", time.Now()); e.Values["lastSuccess"] != old.LastSuccess.Format(time.RFC3339Nano) {
+	if _, e := lookup(
+		t,
+		r,
+		"db/db/repo1",
+		time.Now(),
+	); e.Values["lastSuccess"] != old.LastSuccess.Format(
+		time.RFC3339Nano,
+	) {
 		t.Fatal("uncommitted success was published", e.Values)
 	}
 	api.sample.Clusters[0].Status.PGBackRest.ScheduledBackups = nil
@@ -345,13 +425,28 @@ func TestExistingCheckpointSourcesRemainUsableAfterRestart(t *testing.T) {
 			cluster.Metadata.CreationTimestamp = now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
 			cluster.Status.PGBackRest.ScheduledBackups = nil
 			const key = "db/db/repo1"
-			entry := state.Entry{UID: cluster.Metadata.UID, Created: now.Add(-24 * time.Hour), RepositoryID: repositoryIdentity(cluster, "repo1"), NotBefore: now.Add(-2 * time.Hour), LastSuccess: now.Add(-time.Hour), Source: source}
+			entry := state.Entry{
+				UID:          cluster.Metadata.UID,
+				Created:      now.Add(-24 * time.Hour),
+				RepositoryID: repositoryIdentity(cluster, "repo1"),
+				NotBefore:    now.Add(-2 * time.Hour),
+				LastSuccess:  now.Add(-time.Hour),
+				Source:       source,
+			}
 			data, err := state.Encode(state.Ledger{key: entry})
 			if err != nil {
 				t.Fatal(err)
 			}
 			backend, store := memoryStore(string(data))
-			r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{cluster}}}, store, false, discard))
+			r := harness(
+				New(
+					testConfig(),
+					&fakeAPI{sample: Sample{Clusters: []kube.Cluster{cluster}}},
+					store,
+					false,
+					discard,
+				),
+			)
 			if code, _ := lookup(t, r, key, now); code != 503 {
 				t.Fatal("ledger bypassed fresh API sample")
 			}
@@ -374,7 +469,12 @@ func TestExistingCheckpointSourcesRemainUsableAfterRestart(t *testing.T) {
 
 func TestConflictAdoptsStoredLedgerAndRewrites(t *testing.T) {
 	backend, store := memoryStore(emptyLedger)
-	tombstone := state.Entry{UID: "other-uid", Created: time.Now().Add(-48 * time.Hour).UTC(), RepositoryID: "missing", NotBefore: time.Now().Add(-time.Hour).UTC()}
+	tombstone := state.Entry{
+		UID:          "other-uid",
+		Created:      time.Now().Add(-48 * time.Hour).UTC(),
+		RepositoryID: "missing",
+		NotBefore:    time.Now().Add(-time.Hour).UTC(),
+	}
 	backend.BeforeWrite = func(attempt int) error {
 		if attempt == 0 {
 			// Another writer (or Argo re-applying a compared state) lands first.
@@ -383,13 +483,29 @@ func TestConflictAdoptsStoredLedgerAndRewrites(t *testing.T) {
 		}
 		return nil
 	}
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, store, false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+			store,
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
 	stored, err := state.Decode([]byte(backend.Data()))
-	if err != nil || stored["old/old/repo1"].UID != tombstone.UID || stored["db/db/repo1"].LastSuccess.IsZero() || backend.Writes() != 1 {
+	if err != nil || stored["old/old/repo1"].UID != tombstone.UID ||
+		stored["db/db/repo1"].LastSuccess.IsZero() ||
+		backend.Writes() != 1 {
 		t.Fatal("conflict did not converge on the adopted ledger", stored, err, backend.Writes())
 	}
-	if code, e := lookup(t, r, "db/db/repo1", time.Now()); code != 200 || e.Results["state"] != result.OK {
+	if code, e := lookup(
+		t,
+		r,
+		"db/db/repo1",
+		time.Now(),
+	); code != 200 ||
+		e.Results["state"] != result.OK {
 		t.Fatal(code, e)
 	}
 }
@@ -417,7 +533,9 @@ func TestCheckpointConflictPreservesDestinationChange(t *testing.T) {
 	}
 	// The destination changes while PGO still reports the old backup. At the
 	// first write for the new destination, Argo restores the earlier ledger.
-	api.sample.Clusters[0].Spec.Backups.PGBackRest.Global = map[string]string{"repo1-path": "/changed"}
+	api.sample.Clusters[0].Spec.Backups.PGBackRest.Global = map[string]string{
+		"repo1-path": "/changed",
+	}
 	backend.BeforeWrite = func(attempt int) error {
 		if attempt == 1 {
 			backend.Set(emptyLedger)
@@ -425,7 +543,10 @@ func TestCheckpointConflictPreservesDestinationChange(t *testing.T) {
 		return nil
 	}
 	changedAt := testNow.Add(time.Minute)
-	if report := refresh(changedAt); report.Healthy || report.Results["freshness"] != "no_success" || report.Results["state"] != result.OK {
+	if report := refresh(
+		changedAt,
+	); report.Healthy || report.Results["freshness"] != "no_success" ||
+		report.Results["state"] != result.OK {
 		t.Fatalf("old backup was accepted after the checkpoint conflict: %+v", report)
 	}
 	stored, err := state.Decode([]byte(backend.Data()))
@@ -446,10 +567,18 @@ func TestTimeoutAfterCommitConvergesWithoutRewrite(t *testing.T) {
 		}
 		return nil
 	}
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, store, false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+			store,
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
 	if backend.Writes() != 1 {
-		t.Fatal("read-back did not recognise the committed write", backend.Writes())
+		t.Fatal("read-back did not recognize the committed write", backend.Writes())
 	}
 	if code, e := lookup(t, r, "db/db/repo1", time.Now()); code != 200 {
 		t.Fatal(code, e)
@@ -468,7 +597,9 @@ func TestRolledBackLedgerIsRederivedOnNextPoll(t *testing.T) {
 	backend.Set(emptyLedger)
 	r.Refresh(t.Context(), "pgbackrest")
 	stored, err := state.Decode([]byte(backend.Data()))
-	if err != nil || stored["db/db/repo1"].LastSuccess.IsZero() || stored["db/db/repo2"].LastSuccess.IsZero() || backend.Writes() != written+1 {
+	if err != nil || stored["db/db/repo1"].LastSuccess.IsZero() ||
+		stored["db/db/repo2"].LastSuccess.IsZero() ||
+		backend.Writes() != written+1 {
 		t.Fatal("rolled-back ledger was not re-derived", stored, err, backend.Writes())
 	}
 	// An unchanged ledger is not rewritten.
@@ -496,11 +627,19 @@ func TestEvaluatesAfterCollecting(t *testing.T) {
 
 type slowAPI struct{ cluster kube.Cluster }
 
-func (s *slowAPI) Collect(context.Context) (Sample, error) {
-	time.Sleep(20 * time.Millisecond)
+func (s *slowAPI) Collect(ctx context.Context) (Sample, error) {
+	select {
+	case <-ctx.Done():
+		return Sample{}, ctx.Err()
+	case <-time.After(20 * time.Millisecond):
+	}
 	cluster := s.cluster
-	cluster.Status.PGBackRest.ScheduledBackups = append([]kube.Backup(nil), cluster.Status.PGBackRest.ScheduledBackups...)
-	cluster.Status.PGBackRest.ScheduledBackups[0].CompletionTime = time.Now().UTC().Format(time.RFC3339Nano)
+	cluster.Status.PGBackRest.ScheduledBackups = append(
+		[]kube.Backup(nil),
+		cluster.Status.PGBackRest.ScheduledBackups...)
+	cluster.Status.PGBackRest.ScheduledBackups[0].CompletionTime = time.Now().
+		UTC().
+		Format(time.RFC3339Nano)
 	return Sample{Clusters: []kube.Cluster{cluster}}, nil
 }
 
@@ -518,7 +657,8 @@ func TestCorruptUnknownMissingAndOversizedStateFailClosed(t *testing.T) {
 			for range 2 {
 				r.Refresh(t.Context(), "pgbackrest")
 				code, e := lookup(t, r, "db/db/repo1", time.Now())
-				if code != 503 || e.Results["state"] != "invalid" || e.Results["collection"] != result.OK {
+				if code != 503 || e.Results["state"] != "invalid" ||
+					e.Results["collection"] != result.OK {
 					t.Fatal(code, e)
 				}
 			}
@@ -539,9 +679,23 @@ func TestCorruptUnknownMissingAndOversizedStateFailClosed(t *testing.T) {
 		backend.Set(`{"version":9}`)
 		return nil
 	}
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, state.New(backend), false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+			state.New(backend),
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
-	if _, e := lookup(t, r, "db/db/repo1", time.Now()); e.Results["state"] != "invalid" || backend.Data() != `{"version":9}` {
+	if _, e := lookup(
+		t,
+		r,
+		"db/db/repo1",
+		time.Now(),
+	); e.Results["state"] != "invalid" ||
+		backend.Data() != `{"version":9}` {
 		t.Fatal("corruption during convergence was overwritten", e)
 	}
 	missing := state.NewMemory(emptyLedger, true).Missing()
@@ -554,9 +708,23 @@ func TestCorruptUnknownMissingAndOversizedStateFailClosed(t *testing.T) {
 
 func TestLedgerOverSizeLimitIsNotWritten(t *testing.T) {
 	_, store := memoryStore(emptyLedger)
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, oversized{store}, false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+			oversized{store},
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
-	if code, e := lookup(t, r, "db/db/repo1", time.Now()); code != 503 || e.Results["state"] != "too_large" {
+	if code, e := lookup(
+		t,
+		r,
+		"db/db/repo1",
+		time.Now(),
+	); code != 503 ||
+		e.Results["state"] != "too_large" {
 		t.Fatal(code, e)
 	}
 }
@@ -567,9 +735,23 @@ func (oversized) Save(context.Context, state.Ledger) error { return state.ErrToo
 
 func TestReadOnlyNeverWrites(t *testing.T) {
 	backend, store := memoryStore(emptyLedger)
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, store, true, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+			store,
+			true,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
-	if code, e := lookup(t, r, "db/db/repo1", time.Now()); code != 200 || backend.Writes() != 0 || e.Values["readOnly"] != true {
+	if code, e := lookup(
+		t,
+		r,
+		"db/db/repo1",
+		time.Now(),
+	); code != 200 || backend.Writes() != 0 ||
+		e.Values["readOnly"] != true {
 		t.Fatal(code, e, backend.Writes())
 	}
 }
@@ -588,7 +770,8 @@ func TestDimensionsAndInventory(t *testing.T) {
 	r := harness(New(testConfig(), api, store, false, discard))
 	r.Refresh(t.Context(), "pgbackrest")
 	code, e := lookup(t, r, "", time.Now())
-	if code != 503 || e.Results["inventory"] != "unexpected(2): db/db/repo3, other/other" || e.Results["stanza"] != "2 failing: db/db/repo1, db/db/repo2" ||
+	if code != 503 || e.Results["inventory"] != "unexpected(2): db/db/repo3, other/other" ||
+		e.Results["stanza"] != "2 failing: db/db/repo1, db/db/repo2" ||
 		e.Results["freshness"] != result.OK {
 		t.Fatal(e.Results)
 	}
@@ -609,10 +792,19 @@ func TestDimensionsAndInventory(t *testing.T) {
 		t.Fatal(e.Results)
 	}
 	api.set(func(s *Sample) {
-		s.Clusters[0].Spec.Backups.PGBackRest.Repos = append(s.Clusters[0].Spec.Backups.PGBackRest.Repos, cluster.Spec.Backups.PGBackRest.Repos[1])
+		s.Clusters[0].Spec.Backups.PGBackRest.Repos = append(
+			s.Clusters[0].Spec.Backups.PGBackRest.Repos,
+			cluster.Spec.Backups.PGBackRest.Repos[1],
+		)
 	})
 	r.Refresh(t.Context(), "pgbackrest")
-	if _, e := lookup(t, r, "db/db/repo2", time.Now()); !strings.HasPrefix(e.Results["destination"], "changed(since ") || e.Results["freshness"] != "no_success" {
+	if _, e := lookup(
+		t,
+		r,
+		"db/db/repo2",
+		time.Now(),
+	); !strings.HasPrefix(e.Results["destination"], "changed(since ") ||
+		e.Results["freshness"] != "no_success" {
 		t.Fatal("re-added repository did not wait for a backup after its barrier", e.Results)
 	}
 }
@@ -664,7 +856,10 @@ func TestRealBackrestwatchLedgerSurvivesImport(t *testing.T) {
 	}
 	backend, store := memoryStore(string(data))
 	check := New(cfg, &fakeAPI{sample: sample}, store, false, discard)
-	if _, err := check.Collect(t.Context(), func() time.Time { return fixture.EvaluatedAt.Add(10 * time.Minute) }); err != nil {
+	if _, err := check.Collect(
+		t.Context(),
+		func() time.Time { return fixture.EvaluatedAt.Add(10 * time.Minute) },
+	); err != nil {
 		t.Fatal(err)
 	}
 	if backend.Writes() != 0 || backend.Data() != string(data) {
@@ -675,11 +870,29 @@ func TestRealBackrestwatchLedgerSurvivesImport(t *testing.T) {
 func TestUnreadableLedgerFailsTheCollection(t *testing.T) {
 	backend := state.NewMemory(emptyLedger, true)
 	backend.ReadError = func() error {
-		return &kube.Error{Code: kube.CodeForbidden, Status: 403, Path: "/api/v1/namespaces/argus/configmaps/argus-state"}
+		return &kube.Error{
+			Code:   kube.CodeForbidden,
+			Status: 403,
+			Path:   "/api/v1/namespaces/argus/configmaps/argus-state",
+		}
 	}
-	r := harness(New(testConfig(), &fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}}, state.New(backend), false, discard))
+	r := harness(
+		New(
+			testConfig(),
+			&fakeAPI{sample: Sample{Clusters: []kube.Cluster{liveCluster(t)}}},
+			state.New(backend),
+			false,
+			discard,
+		),
+	)
 	r.Refresh(t.Context(), "pgbackrest")
-	if code, e := lookup(t, r, "", time.Now()); code != 503 || e.Results["collection"] != "forbidden" {
+	if code, e := lookup(
+		t,
+		r,
+		"",
+		time.Now(),
+	); code != 503 ||
+		e.Results["collection"] != "forbidden" {
 		t.Fatal(code, e.Results)
 	}
 }

@@ -10,9 +10,15 @@ import (
 	"github.com/zekihan/argus/internal/config"
 )
 
-var now = time.Date(2026, 11, 7, 15, 0, 0, 0, time.UTC)
+var now = time.Date(2026, time.November, 7, 15, 0, 0, 0, time.UTC)
 
-func app(t *testing.T, name string, automated bool, sync, health, transition, phase string) Application {
+func app(
+	t *testing.T,
+	name string,
+	automated bool,
+	sync, health, transition, phase string,
+) Application {
+	t.Helper()
 	policy := `{"syncOptions":["Prune=false"]}`
 	if automated {
 		policy = `{"automated":{"prune":true}}`
@@ -39,7 +45,14 @@ func cfg() config.ArgoCD {
 	return *full.Checks.ArgoCD
 }
 
-func results(t *testing.T, check *Check, apps []Application, at time.Time, name string) map[string]string {
+func results(
+	t *testing.T,
+	check *Check,
+	apps []Application,
+	at time.Time,
+	name string,
+) map[string]string {
+	t.Helper()
 	item, ok := check.Evaluate(apps, at).Find(name)
 	if !ok {
 		t.Fatal(name)
@@ -49,19 +62,34 @@ func results(t *testing.T, check *Check, apps []Application, at time.Time, name 
 
 func TestSyncWindowsDependOnAutomation(t *testing.T) {
 	check := New(cfg(), nil)
-	apps := []Application{app(t, "auto", true, "OutOfSync", "Healthy", "", "Succeeded"), app(t, "manual", false, "OutOfSync", "Healthy", "", "Succeeded")}
+	apps := []Application{
+		app(t, "auto", true, "OutOfSync", "Healthy", "", "Succeeded"),
+		app(t, "manual", false, "OutOfSync", "Healthy", "", "Succeeded"),
+	}
 	for _, offset := range []time.Duration{0, 15 * time.Minute} {
 		if r := results(t, check, apps, now.Add(offset), "auto"); r["sync"] != "ok" {
 			t.Fatal(offset, r)
 		}
 	}
-	if r := results(t, check, apps, now.Add(16*time.Minute), "auto"); r["sync"] != "out_of_sync(for 16m, max 15m)" {
+	if r := results(
+		t,
+		check,
+		apps,
+		now.Add(16*time.Minute),
+		"auto",
+	); r["sync"] != "out_of_sync(for 16m, max 15m)" {
 		t.Fatal(r)
 	}
 	if r := results(t, check, apps, now.Add(6*24*time.Hour), "manual"); r["sync"] != "ok" {
 		t.Fatal("manual app paged within its window", r)
 	}
-	if r := results(t, check, apps, now.Add(7*24*time.Hour+time.Minute), "manual"); r["sync"] != "out_of_sync(for 7d0h, max 7d0h)" {
+	if r := results(
+		t,
+		check,
+		apps,
+		now.Add(7*24*time.Hour+time.Minute),
+		"manual",
+	); r["sync"] != "out_of_sync(for 7d0h, max 7d0h)" {
 		t.Fatal(r)
 	}
 	collection := check.Evaluate(apps, now.Add(7*24*time.Hour+2*time.Minute))
@@ -76,7 +104,13 @@ func TestSyncWindowsDependOnAutomation(t *testing.T) {
 	apps[0].Status.Sync.Status = "Synced"
 	results(t, check, apps, now.Add(8*24*time.Hour), "auto")
 	apps[0].Status.Sync.Status = "OutOfSync"
-	if r := results(t, check, apps, now.Add(8*24*time.Hour+time.Minute), "auto"); r["sync"] != "ok" {
+	if r := results(
+		t,
+		check,
+		apps,
+		now.Add(8*24*time.Hour+time.Minute),
+		"auto",
+	); r["sync"] != "ok" {
 		t.Fatal(r)
 	}
 }
@@ -96,7 +130,14 @@ func TestRecreatedApplicationStartsNewObservationWindows(t *testing.T) {
 	apps := []Application{app(t, "auto", true, "OutOfSync", "Progressing", "", "Succeeded")}
 	apps[0].Metadata.UID = "original"
 	results(t, check, apps, now, "auto")
-	if r := results(t, check, apps, now.Add(16*time.Minute), "auto"); r["sync"] != "out_of_sync(for 16m, max 15m)" || r["health"] != "progressing(for 16m, max 15m)" {
+	if r := results(
+		t,
+		check,
+		apps,
+		now.Add(16*time.Minute),
+		"auto",
+	); r["sync"] != "out_of_sync(for 16m, max 15m)" ||
+		r["health"] != "progressing(for 16m, max 15m)" {
 		t.Fatal("original application did not age past both windows", r)
 	}
 
@@ -105,7 +146,14 @@ func TestRecreatedApplicationStartsNewObservationWindows(t *testing.T) {
 	if r := results(t, check, apps, replacedAt, "auto"); r["sync"] != "ok" || r["health"] != "ok" {
 		t.Fatal("replacement application inherited the original windows", r)
 	}
-	if r := results(t, check, apps, replacedAt.Add(16*time.Minute), "auto"); r["sync"] != "out_of_sync(for 16m, max 15m)" || r["health"] != "progressing(for 16m, max 15m)" {
+	if r := results(
+		t,
+		check,
+		apps,
+		replacedAt.Add(16*time.Minute),
+		"auto",
+	); r["sync"] != "out_of_sync(for 16m, max 15m)" ||
+		r["health"] != "progressing(for 16m, max 15m)" {
 		t.Fatal("replacement application did not age past both windows", r)
 	}
 }
@@ -134,11 +182,16 @@ func TestHealthAndOperation(t *testing.T) {
 }
 
 func TestMissingApplicationAndHygiene(t *testing.T) {
-	h := checktest.New(New(cfg(), &fakeAPI{apps: []Application{app(t, "auto", true, "Synced", "Healthy", "", "Succeeded")}}), now).Refresh(t)
+	h := checktest.New(New(cfg(), &fakeAPI{apps: []Application{app(t, "auto", true, "Synced", "Healthy", "", "Succeeded")}}), now).
+		Refresh(t)
 	if code, e := h.Get(t, Route+"/manual"); code != 503 || e.Results["sync"] != "missing" {
 		t.Fatal(e)
 	}
-	if code, e := h.Get(t, Route+"/auto"); code != 200 || e.Values["lastSync"] != "2026-11-07T11:48:09Z" {
+	if code, e := h.Get(
+		t,
+		Route+"/auto",
+	); code != 200 ||
+		e.Values["lastSync"] != "2026-11-07T11:48:09Z" {
 		t.Fatal(e)
 	}
 	h.NoLeak(t, "argo-secret")

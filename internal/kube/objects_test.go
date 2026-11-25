@@ -12,7 +12,11 @@ func TestParseTimeRequiresZone(t *testing.T) {
 			t.Fatal(value, err)
 		}
 	}
-	if got, _ := ParseTime("2026-11-06T03:00:00+03:00"); !got.Equal(time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)) {
+	if got, _ := ParseTime(
+		"2026-11-06T03:00:00+03:00",
+	); !got.Equal(
+		time.Date(2026, time.November, 6, 0, 0, 0, 0, time.UTC),
+	) {
 		t.Fatal(got)
 	}
 	for _, value := range []string{"", "invalid", "2026-11-06T00:00:00", "2026-11-06", "2026-11-06 00:00:00Z", "2026-13-06T00:00:00Z"} {
@@ -37,7 +41,8 @@ func TestQuantity(t *testing.T) {
 
 func TestConditions(t *testing.T) {
 	conditions := []Condition{{Type: "Ready", Status: "False"}, {Type: "Synced", Status: "True"}}
-	if ConditionTrue(conditions, "Ready") || !ConditionTrue(conditions, "Synced") || ConditionTrue(conditions, "Missing") {
+	if ConditionTrue(conditions, "Ready") || !ConditionTrue(conditions, "Synced") ||
+		ConditionTrue(conditions, "Missing") {
 		t.Fatal("condition lookup")
 	}
 	meta := Metadata{Owners: []Owner{{Kind: "CronJob", UID: "u", Controller: true}}}

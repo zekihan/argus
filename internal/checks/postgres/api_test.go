@@ -29,11 +29,16 @@ func TestAPICollectFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = (API{Client: client}).Collect(t.Context())
-	if err == nil || kube.CodeOf(err) != kube.CodeForbidden || strings.Contains(err.Error(), secret) {
+	if err == nil || kube.CodeOf(err) != kube.CodeForbidden ||
+		strings.Contains(err.Error(), secret) {
 		t.Fatal(err)
 	}
 	h := checktest.New(New(cfg, &fakeAPI{err: err}), now).Refresh(t)
-	if code, e := h.Get(t, Route+"/db/db"); code != 503 || e.Results["collection"] != kube.CodeForbidden || e.Results["instances"] != result.Pending {
+	if code, e := h.Get(
+		t,
+		Route+"/db/db",
+	); code != 503 || e.Results["collection"] != kube.CodeForbidden ||
+		e.Results["instances"] != result.Pending {
 		t.Fatal(e.Results)
 	}
 	h.NoLeak(t, secret)
@@ -49,7 +54,11 @@ func TestShutdownAndEmptyInstanceSetFailClosed(t *testing.T) {
 	shutdown := true
 	cluster := decode(t, clusterJSON)
 	cluster.Spec.Shutdown = &shutdown
-	if _, r := run(t, cluster); r["instances"] != result.NA || r["proxy"] != result.NA || r["scheduled_backups"] != result.OK {
+	if _, r := run(
+		t,
+		cluster,
+	); r["instances"] != result.NA || r["proxy"] != result.NA ||
+		r["scheduled_backups"] != result.OK {
 		t.Fatal(r)
 	}
 	cluster = decode(t, clusterJSON)

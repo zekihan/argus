@@ -17,12 +17,14 @@ import (
 )
 
 // Fixtures from platform/longhorn/tests/test_backup_monitor.py.
-var now = time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+var now = time.Date(2026, time.November, 5, 12, 0, 0, 0, time.UTC)
 
 const stamp = "2026-11-05T12:00:00+00:00"
 
-var cfg = config.Longhorn{Namespace: "longhorn", ExpectedPVCs: []string{"bazarr/bazarr-state"}, BackupGroup: "backup",
-	MaxBackupAgeSeconds: 108000, SystemBackupMaxAgeSeconds: 691200, SystemBackupGraceSeconds: 3600}
+var cfg = config.Longhorn{
+	Namespace: "longhorn", ExpectedPVCs: []string{"bazarr/bazarr-state"}, BackupGroup: "backup",
+	MaxBackupAgeSeconds: 108000, SystemBackupMaxAgeSeconds: 691200, SystemBackupGraceSeconds: 3600,
+}
 
 const volumeJSON = `{"metadata":{"name":"pvc-123","creationTimestamp":"2026-11-05T10:30:00Z","labels":{"recurring-job-group.longhorn.io/backup":"enabled"}},
 "status":{"kubernetesStatus":{"namespace":"bazarr","pvcName":"bazarr-state","lastPVCRefAt":""},"lastBackupAt":"` + stamp + `","robustness":"healthy"}}`
@@ -44,9 +46,19 @@ type fakeAPI struct {
 func (f *fakeAPI) Collect(context.Context) (Sample, error) { return f.sample, f.err }
 
 func healthy(t *testing.T) Sample {
-	return Sample{Volumes: []Volume{decode[Volume](t, volumeJSON)},
-		BackupTargets: []BackupTarget{decode[BackupTarget](t, `{"metadata":{"name":"rustfs"},"status":{"available":true}}`)},
-		SystemBackups: []SystemBackup{decode[SystemBackup](t, `{"metadata":{"name":"weekly"},"status":{"createdAt":"`+stamp+`","state":"Ready"}}`)}}
+	t.Helper()
+	return Sample{
+		Volumes: []Volume{decode[Volume](t, volumeJSON)},
+		BackupTargets: []BackupTarget{
+			decode[BackupTarget](t, `{"metadata":{"name":"rustfs"},"status":{"available":true}}`),
+		},
+		SystemBackups: []SystemBackup{
+			decode[SystemBackup](
+				t,
+				`{"metadata":{"name":"weekly"},"status":{"createdAt":"`+stamp+`","state":"Ready"}}`,
+			),
+		},
+	}
 }
 
 // verdict is the cutover parity condition: Python's single /backups summary
@@ -65,7 +77,11 @@ func TestHealthy(t *testing.T) {
 	if !ok {
 		t.Fatal("healthy fixture failed")
 	}
-	if code, e := h.Get(t, VolumesRoute+"/bazarr/bazarr-state"); code != 200 || e.Values["lastBackupAgeSeconds"] != 0.0 {
+	if code, e := h.Get(
+		t,
+		VolumesRoute+"/bazarr/bazarr-state",
+	); code != 200 ||
+		e.Values["lastBackupAgeSeconds"] != 0.0 {
 		t.Fatal(code, e)
 	}
 	if code, _ := h.Get(t, SystemRoute); code != 200 {
@@ -97,7 +113,11 @@ func TestBackupProblemsExplainCause(t *testing.T) {
 		if code != 503 || e.Results["backup"] != want || e.Summary != "backup: "+want {
 			t.Fatal(date, e)
 		}
-		if _, aggregate := h.Get(t, VolumesRoute); aggregate.Results["backup"] != "1 failing: bazarr/bazarr-state" || aggregate.Items["bazarr/bazarr-state"] != "backup: "+want {
+		if _, aggregate := h.Get(
+			t,
+			VolumesRoute,
+		); aggregate.Results["backup"] != "1 failing: bazarr/bazarr-state" ||
+			aggregate.Items["bazarr/bazarr-state"] != "backup: "+want {
 			t.Fatal(aggregate)
 		}
 	}
@@ -137,7 +157,10 @@ func TestMissingHistoricalAmbiguousAndUnexpectedVolumes(t *testing.T) {
 func TestUnavailableTarget(t *testing.T) {
 	for _, available := range []string{"false", "null", `"true"`} {
 		s := healthy(t)
-		s.BackupTargets[0] = decode[BackupTarget](t, `{"metadata":{"name":"rustfs"},"status":{"available":`+available+`}}`)
+		s.BackupTargets[0] = decode[BackupTarget](
+			t,
+			`{"metadata":{"name":"rustfs"},"status":{"available":`+available+`}}`,
+		)
 		if ok, h := verdict(t, s); ok {
 			t.Fatal(available)
 		} else if _, e := h.Get(t, SystemRoute); e.Results["backup_targets"] != "unavailable(rustfs)" {
@@ -154,7 +177,10 @@ func TestUnavailableTarget(t *testing.T) {
 func TestOldFailedOrMissingSystemBackup(t *testing.T) {
 	for _, tc := range []struct{ state, date string }{{"Ready", "2026-10-27T00:00:00Z"}, {"Error", stamp}, {"Uploading", stamp}, {"Ready", ""}} {
 		s := healthy(t)
-		s.SystemBackups[0] = decode[SystemBackup](t, `{"metadata":{"name":"weekly"},"status":{"createdAt":"`+tc.date+`","state":"`+tc.state+`"}}`)
+		s.SystemBackups[0] = decode[SystemBackup](
+			t,
+			`{"metadata":{"name":"weekly"},"status":{"createdAt":"`+tc.date+`","state":"`+tc.state+`"}}`,
+		)
 		if ok, _ := verdict(t, s); ok {
 			t.Fatal(tc)
 		}
@@ -169,7 +195,13 @@ func TestOldFailedOrMissingSystemBackup(t *testing.T) {
 func TestNewestSystemBackupCannotHideBehindReadyOlderOne(t *testing.T) {
 	s := healthy(t)
 	s.SystemBackups[0].Status.State = "Error"
-	s.SystemBackups = append(s.SystemBackups, decode[SystemBackup](t, `{"metadata":{"name":"older"},"status":{"createdAt":"2026-11-04T12:00:00Z","state":"Ready"}}`))
+	s.SystemBackups = append(
+		s.SystemBackups,
+		decode[SystemBackup](
+			t,
+			`{"metadata":{"name":"older"},"status":{"createdAt":"2026-11-04T12:00:00Z","state":"Ready"}}`,
+		),
+	)
 	if ok, h := verdict(t, s); ok {
 		t.Fatal("older ready backup hid the failed newest one")
 	} else if _, e := h.Get(t, SystemRoute); e.Results["system_backup"] != "not_ready(weekly)" {
@@ -207,11 +239,13 @@ func TestUnknownVolumeRobustnessRequiresDetachedState(t *testing.T) {
 			h := checktest.New(New(cfg, &fakeAPI{sample: s}), now).Refresh(t)
 			const target = "bazarr/bazarr-state"
 			code, item := h.Get(t, VolumesRoute+"/"+target)
-			if code != http.StatusServiceUnavailable || item.Results["robustness"] != "unknown" || item.Results["state"] != "ok" {
+			if code != http.StatusServiceUnavailable || item.Results["robustness"] != "unknown" ||
+				item.Results["state"] != "ok" {
 				t.Errorf("item HTTP %d, results %v", code, item.Results)
 			}
 			code, aggregate := h.Get(t, VolumesRoute)
-			if code != http.StatusServiceUnavailable || aggregate.Results["robustness"] != "1 failing: "+target {
+			if code != http.StatusServiceUnavailable ||
+				aggregate.Results["robustness"] != "1 failing: "+target {
 				t.Errorf("aggregate HTTP %d, results %v", code, aggregate.Results)
 			}
 		})
@@ -222,16 +256,31 @@ func TestDetailDimensions(t *testing.T) {
 	s := healthy(t)
 	v := &s.Volumes[0]
 	v.Status.State, v.Spec.NumberOfReplicas, v.Status.CurrentNodeID = "attached", 2, "node-a"
-	v.Status.Conditions = []kube.Condition{{Type: "Scheduled", Status: "False"}, {Type: "TooManySnapshots", Status: "True"}}
+	v.Status.Conditions = []kube.Condition{
+		{Type: "Scheduled", Status: "False"},
+		{Type: "TooManySnapshots", Status: "True"},
+	}
 	s.Replicas = []Replica{
-		decode[Replica](t, `{"spec":{"volumeName":"pvc-123","healthyAt":"x"},"status":{"currentState":"running"}}`),
-		decode[Replica](t, `{"spec":{"volumeName":"pvc-123","healthyAt":"x","failedAt":"y"},"status":{"currentState":"stopped"}}`),
-		decode[Replica](t, `{"spec":{"volumeName":"other","healthyAt":"x"},"status":{"currentState":"running"}}`),
+		decode[Replica](
+			t,
+			`{"spec":{"volumeName":"pvc-123","healthyAt":"x"},"status":{"currentState":"running"}}`,
+		),
+		decode[Replica](
+			t,
+			`{"spec":{"volumeName":"pvc-123","healthyAt":"x","failedAt":"y"},"status":{"currentState":"stopped"}}`,
+		),
+		decode[Replica](
+			t,
+			`{"spec":{"volumeName":"other","healthyAt":"x"},"status":{"currentState":"running"}}`,
+		),
 	}
 	ok, h := verdict(t, s)
 	_, e := h.Get(t, VolumesRoute+"/bazarr/bazarr-state")
-	if !ok || e.Results["replicas"] != "degraded(healthy 1, desired 2)" || e.Results["scheduled"] != "not_scheduled" || e.Results["snapshots"] != "too_many_snapshots" ||
-		e.Values["node"] != "node-a" || e.Values["replicasHealthy"] != 1 {
+	if !ok || e.Results["replicas"] != "degraded(healthy 1, desired 2)" ||
+		e.Results["scheduled"] != "not_scheduled" ||
+		e.Results["snapshots"] != "too_many_snapshots" ||
+		e.Values["node"] != "node-a" ||
+		e.Values["replicasHealthy"] != 1 {
 		t.Fatal("detail dimensions wrong or affected parity", ok, e.Results, e.Values)
 	}
 	// Detached: replica health does not apply.

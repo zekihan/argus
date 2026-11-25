@@ -95,22 +95,53 @@ func (probeKey) Type() string                        { return "argus-host-key-lo
 func (probeKey) Marshal() []byte                     { return []byte("argus-host-key-lookup") }
 func (probeKey) Verify([]byte, *ssh.Signature) error { return errors.New("not a key") }
 
+// outcomeReason maps a probe failure phase to its reason code.
+func outcomeReason(reason string) Outcome {
+	return Outcome{SSH: result.Reason(reason), Exit: -1}
+}
+
+// hostDialer dials the host and reports a timeout outcome for deadline errors.
+func hostDialer(ctx context.Context, address string, deadline time.Time) (net.Conn, string) {
+	conn, err := (&net.Dialer{Timeout: time.Until(deadline)}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		var netErr net.Error
+		if ctx.Err() != nil || (errors.As(err, &netErr) && netErr.Timeout()) {
+			return nil, "timeout"
+		}
+		return nil, "unreachable"
+	}
+	return conn, ""
+}
+
+// handshakeOutcome maps a handshake failure to its probe outcome.
+func handshakeOutcome(ctx context.Context, err error, keyFailure string) Outcome {
+	switch {
+	case keyFailure != "":
+		return Outcome{SSH: keyFailure, Exit: -1}
+	case ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded):
+		return outcomeReason("timeout")
+	case strings.Contains(err.Error(), "unable to authenticate"):
+		return outcomeReason("auth_failed")
+	}
+	return outcomeReason("handshake_failed")
+}
+
 func (s SSH) Probe(ctx context.Context, host config.Host) Outcome {
 	keyData, err := readSmall(s.PrivateKeyFile, 64*1024)
 	if err != nil {
-		return Outcome{SSH: result.Reason("key_unavailable"), Exit: -1}
+		return outcomeReason("key_unavailable")
 	}
 	signer, err := ssh.ParsePrivateKey(keyData)
 	if err != nil {
-		return Outcome{SSH: result.Reason("key_unavailable"), Exit: -1}
+		return outcomeReason("key_unavailable")
 	}
 	known, err := knownhosts.New(s.KnownHostsFile)
 	if err != nil {
-		return Outcome{SSH: result.Reason("known_hosts_unavailable"), Exit: -1}
+		return outcomeReason("known_hosts_unavailable")
 	}
 	address, err := config.HostAddress(host.Address)
 	if err != nil {
-		return Outcome{SSH: result.Reason("unreachable"), Exit: -1}
+		return outcomeReason("unreachable")
 	}
 	var keyFailure string
 	callback := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
@@ -135,36 +166,40 @@ func (s SSH) Probe(ctx context.Context, host config.Host) Outcome {
 		deadline = time.Now().Add(30 * time.Second)
 	}
 	start := time.Now()
-	conn, err := (&net.Dialer{Timeout: time.Until(deadline)}).DialContext(ctx, "tcp", address)
-	if err != nil {
-		var netErr net.Error
-		if ctx.Err() != nil || (errors.As(err, &netErr) && netErr.Timeout()) {
-			return Outcome{SSH: result.Reason("timeout"), Exit: -1}
-		}
-		return Outcome{SSH: result.Reason("unreachable"), Exit: -1}
+	conn, reason := hostDialer(ctx, address, deadline)
+	if reason != "" {
+		return outcomeReason(reason)
 	}
 	defer func() { _ = conn.Close() }()
 	// Bound the handshake and the whole session by the host deadline.
-	_ = conn.SetDeadline(deadline)
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return Outcome{SSH: result.Reason("unreachable"), Exit: -1}
+	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	clientConfig := &ssh.ClientConfig{User: s.User, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: callback,
-		HostKeyAlgorithms: hostKeyAlgorithms(known, address), Timeout: time.Until(deadline)}
+	clientConfig := &ssh.ClientConfig{
+		User: s.User, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: callback,
+		HostKeyAlgorithms: hostKeyAlgorithms(known, address), Timeout: time.Until(deadline),
+	}
 	sshConn, channels, requests, err := ssh.NewClientConn(conn, address, clientConfig)
 	if err != nil {
-		switch {
-		case keyFailure != "":
-			return Outcome{SSH: keyFailure, Exit: -1}
-		case ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded):
-			return Outcome{SSH: result.Reason("timeout"), Exit: -1}
-		case strings.Contains(err.Error(), "unable to authenticate"):
-			return Outcome{SSH: result.Reason("auth_failed"), Exit: -1}
-		}
-		return Outcome{SSH: result.Reason("handshake_failed"), Exit: -1}
+		return handshakeOutcome(ctx, err, keyFailure)
 	}
 	client := ssh.NewClient(sshConn, channels, requests)
 	defer func() { _ = client.Close() }()
 	outcome := Outcome{SSH: result.OK, SSHLatency: time.Since(start), Exit: -1}
+	outcome.RunLatency = sessionOutcome(ctx, client, deadline, &outcome)
+	return outcome
+}
+
+// sessionOutcome runs the shell and records the outcome's exit and output.
+func sessionOutcome(
+	ctx context.Context,
+	client *ssh.Client,
+	deadline time.Time,
+	outcome *Outcome,
+) time.Duration {
 	stdout := &limited{}
 	runStart := time.Now()
 	session, err := client.NewSession()
@@ -177,13 +212,14 @@ func (s SSH) Probe(ctx context.Context, host config.Host) Outcome {
 	if err != nil {
 		if ctx.Err() != nil || !time.Now().Before(deadline) {
 			outcome.Timeout = true
-			outcome.RunLatency = time.Since(runStart)
-			return outcome
+			outcome.Output, outcome.Truncated = append(
+				[]byte(nil),
+				stdout.buf.Bytes()...), stdout.truncated
+			return time.Since(runStart)
 		}
-		return Outcome{SSH: result.Reason("session_failed"), Exit: -1}
+		return 0
 	}
 	err = session.Wait()
-	outcome.RunLatency = time.Since(runStart)
 	var exitErr *ssh.ExitError
 	switch {
 	case err == nil:
@@ -196,5 +232,5 @@ func (s SSH) Probe(ctx context.Context, host config.Host) Outcome {
 	stdout.mu.Lock()
 	outcome.Output, outcome.Truncated = append([]byte(nil), stdout.buf.Bytes()...), stdout.truncated
 	stdout.mu.Unlock()
-	return outcome
+	return time.Since(runStart)
 }

@@ -31,7 +31,9 @@ func TestAPICollectStopsAfterTheFirstFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = (API{Client: client, Namespace: "longhorn"}).Collect(t.Context())
-	if err == nil || kube.CodeOf(err) != kube.CodeForbidden || strings.Contains(err.Error(), secret) || len(paths) != 2 {
+	if err == nil || kube.CodeOf(err) != kube.CodeForbidden ||
+		strings.Contains(err.Error(), secret) ||
+		len(paths) != 2 {
 		t.Fatalf("error = %v, paths = %v", err, paths)
 	}
 }
@@ -41,7 +43,9 @@ func TestVolumeAndSystemBackupEdgeCasesFailClosed(t *testing.T) {
 	s.Volumes[0].Metadata.CreationTimestamp = "not-a-time"
 	s.Volumes[0].Status.LastBackupAt = nil
 	s.Volumes[0].Spec.Size = "not-a-size"
-	s.Volumes[0].Status.Conditions = []kube.Condition{{Type: "Scheduled", Status: "Unknown", Reason: "secret-condition"}}
+	s.Volumes[0].Status.Conditions = []kube.Condition{
+		{Type: "Scheduled", Status: "Unknown", Reason: "secret-condition"},
+	}
 	extra := s.Volumes[0]
 	extra.Metadata.Name = ""
 	extra.Metadata.Labels = map[string]string{"recurring-job-group.longhorn.io/backup": "enabled"}
@@ -63,13 +67,16 @@ func TestVolumeAndSystemBackupEdgeCasesFailClosed(t *testing.T) {
 		t.Fatal(volume.Values)
 	}
 	_, system := h.Get(t, SystemRoute)
-	if system.Results["inventory"] != "unexpected(1): unknown" || system.Results["system_backup"] != "stale_or_invalid(weekly, age 1h0m, max 8d1h)" {
+	if system.Results["inventory"] != "unexpected(1): unknown" ||
+		system.Results["system_backup"] != "stale_or_invalid(weekly, age 1h0m, max 8d1h)" {
 		t.Fatal(system.Results)
 	}
 	h.NoLeak(t, "secret-condition")
 	onlyBroken := healthy(t)
 	onlyBroken.SystemBackups = []SystemBackup{backup}
-	if _, e := checktest.New(New(cfg, &fakeAPI{sample: onlyBroken}), now).Refresh(t).Get(t, SystemRoute); e.Results["system_backup"] != "invalid_created_at(broken)" {
+	if _, e := checktest.New(New(cfg, &fakeAPI{sample: onlyBroken}), now).
+		Refresh(t).
+		Get(t, SystemRoute); e.Results["system_backup"] != "invalid_created_at(broken)" {
 		t.Fatal(e.Results)
 	}
 	code, body := h.Runner.Lookup(SystemRoute, time.Now().Add(400*24*time.Hour))

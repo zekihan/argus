@@ -14,9 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zekihan/argus/internal/runner"
 	"github.com/zekihan/go-commons/metrics"
+
+	"github.com/zekihan/argus/internal/runner"
 )
+
+// healthzPath is the unauthenticated health route.
+const healthzPath = "/healthz"
 
 // Routes is what the handler serves.
 type Routes interface {
@@ -32,7 +36,9 @@ func write(w http.ResponseWriter, r *http.Request, code int, payload any) {
 	}
 	w.WriteHeader(code)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(append(body, '\n'))
+		if _, err := w.Write(append(body, '\n')); err != nil {
+			return
+		}
 	}
 }
 
@@ -43,8 +49,8 @@ func Handler(routes Routes, tokenFile string, reg *metrics.Registry) http.Handle
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if r.URL.Path != "/healthz" {
-			// Authenticate before routing so unknown paths reveal nothing.
+		// Authenticate before routing so unknown paths reveal nothing.
+		if r.URL.Path != healthzPath {
 			if code := authorize(r, tokenFile); code != http.StatusOK {
 				if code == http.StatusUnauthorized {
 					w.Header().Set("WWW-Authenticate", `Bearer realm="argus"`)
@@ -55,12 +61,17 @@ func Handler(routes Routes, tokenFile string, reg *metrics.Registry) http.Handle
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			write(w, r, http.StatusMethodNotAllowed, map[string]string{"reason": "method not allowed"})
+			write(
+				w,
+				r,
+				http.StatusMethodNotAllowed,
+				map[string]string{"reason": "method not allowed"},
+			)
 			return
 		}
 		now := time.Now()
 		switch path := r.URL.Path; {
-		case path == "/healthz":
+		case path == healthzPath:
 			write(w, r, http.StatusOK, map[string]bool{"healthy": true})
 		case path == "/v1/checks":
 			code, index := routes.Index(now)
@@ -85,8 +96,8 @@ func Handler(routes Routes, tokenFile string, reg *metrics.Registry) http.Handle
 // Raw paths never become label values.
 func apiRoute(path string) string {
 	switch {
-	case path == "/healthz":
-		return "/healthz"
+	case path == healthzPath:
+		return healthzPath
 	case path == "/v1/checks":
 		return "/v1/checks"
 	case strings.HasPrefix(path, "/v1/"):
@@ -99,19 +110,51 @@ func apiRoute(path string) string {
 // Serve runs the poller and the HTTP server, and drains both on cancellation.
 // With certificates it serves TLS only, re-reading the files as they change.
 // A non-nil reg counts and times API requests by method, route and status.
-func Serve(ctx context.Context, listener net.Listener, run func(context.Context), routes Routes, tokenFile string, certificates *Reloader, logger *slog.Logger, reg *metrics.Registry) error {
+func Serve(
+	ctx context.Context,
+	listener net.Listener,
+	run func(context.Context),
+	routes Routes,
+	tokenFile string,
+	certificates *Reloader,
+	logger *slog.Logger,
+	reg *metrics.Registry,
+) error {
 	return serve(ctx, listener, run, routes, tokenFile, certificates, logger, reg, 15*time.Second)
 }
 
-func serve(ctx context.Context, listener net.Listener, run func(context.Context), routes Routes, tokenFile string, certificates *Reloader, logger *slog.Logger, reg *metrics.Registry, shutdownTimeout time.Duration) error {
+func serve(
+	ctx context.Context,
+	listener net.Listener,
+	run func(context.Context),
+	routes Routes,
+	tokenFile string,
+	certificates *Reloader,
+	logger *slog.Logger,
+	reg *metrics.Registry,
+	shutdownTimeout time.Duration,
+) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	server := &http.Server{Handler: Handler(routes, tokenFile, reg), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
-		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 * 1024,
+	server := &http.Server{
+		Handler: Handler(
+			routes,
+			tokenFile,
+			reg,
+		),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    16 * 1024,
 		// TLS handshake failures from scanners are not actionable and may echo client data.
-		ErrorLog: slog.NewLogLogger(slog.DiscardHandler, slog.LevelError)}
+		ErrorLog: slog.NewLogLogger(slog.DiscardHandler, slog.LevelError),
+	}
 	if certificates != nil {
-		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certificates.GetCertificate}
+		server.TLSConfig = &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: certificates.GetCertificate,
+		}
 		listener = tls.NewListener(listener, server.TLSConfig)
 	}
 	pollDone := make(chan struct{})
@@ -124,7 +167,10 @@ func serve(ctx context.Context, listener net.Listener, run func(context.Context)
 	case err = <-serveDone:
 	}
 	cancel()
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	drainCtx, drainCancel := context.WithTimeout(
+		context.Background(),
+		shutdownTimeout,
+	)
 	defer drainCancel()
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
@@ -132,6 +178,7 @@ func serve(ctx context.Context, listener net.Listener, run func(context.Context)
 		// Never surface the network error text.
 		err = errors.New("HTTP server failed")
 	}
+	//nolint:contextcheck // Drain grace period must outlive the parent context.
 	if shutdownErr := server.Shutdown(drainCtx); shutdownErr != nil {
 		_ = server.Close()
 		err = errors.Join(err, shutdownErr)
@@ -142,7 +189,7 @@ func serve(ctx context.Context, listener net.Listener, run func(context.Context)
 		err = errors.Join(err, fmt.Errorf("wait for polling goroutine: %w", drainCtx.Err()))
 	}
 	if logger != nil {
-		logger.Info("Server stopped")
+		logger.InfoContext(ctx, "Server stopped")
 	}
 	return err
 }

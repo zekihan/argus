@@ -28,8 +28,16 @@ func TestCollectListsBackupObjectsOnlyInInventoryNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.PGBackRest{Clusters: []config.Cluster{{Namespace: "b", Name: "x"}, {Namespace: "a", Name: "y"}, {Namespace: "b", Name: "z"}}}
-	if _, err := (API{Client: client, Namespaces: Namespaces(cfg)}).Collect(t.Context()); err != nil {
+	cfg := config.PGBackRest{
+		Clusters: []config.Cluster{
+			{Namespace: "b", Name: "x"},
+			{Namespace: "a", Name: "y"},
+			{Namespace: "b", Name: "z"},
+		},
+	}
+	if _, err := (API{Client: client, Namespaces: Namespaces(cfg)}).Collect(
+		t.Context(),
+	); err != nil {
 		t.Fatal(err)
 	}
 	sort.Strings(paths)
@@ -58,21 +66,24 @@ func TestCollectFailsClosedWithoutAPartialSample(t *testing.T) {
 		"/apis/batch/v1/namespaces/db/cronjobs",
 	} {
 		t.Run(failAt, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == failAt {
-					w.WriteHeader(http.StatusForbidden)
-					_, _ = io.WriteString(w, secret)
-					return
-				}
-				_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1"},"items":[]}`))
-			}))
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == failAt {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = io.WriteString(w, secret)
+						return
+					}
+					_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1"},"items":[]}`))
+				}),
+			)
 			defer server.Close()
 			client, err := kube.New(server.URL, "", "", "test", time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, err = (API{Client: client, Namespaces: []string{"db"}}).Collect(t.Context())
-			if err == nil || kube.CodeOf(err) != kube.CodeForbidden || strings.Contains(err.Error(), secret) {
+			if err == nil || kube.CodeOf(err) != kube.CodeForbidden ||
+				strings.Contains(err.Error(), secret) {
 				t.Fatal(err)
 			}
 		})

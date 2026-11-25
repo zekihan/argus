@@ -9,6 +9,13 @@ import (
 func init() {
 	register("hosts", func(cfg config.Config, _ Deps) (runner.Check, error) {
 		c := *cfg.Checks.Hosts
-		return hosts.New(c, hosts.SSH{User: c.User, PrivateKeyFile: c.PrivateKeyFile, KnownHostsFile: c.KnownHostsFile}), nil
+		return hosts.New(
+			c,
+			hosts.SSH{
+				User:           c.User,
+				PrivateKeyFile: c.PrivateKeyFile,
+				KnownHostsFile: c.KnownHostsFile,
+			},
+		), nil
 	})
 }

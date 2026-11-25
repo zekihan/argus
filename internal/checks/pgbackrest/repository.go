@@ -50,11 +50,14 @@ func repositoryIdentity(cluster kube.Cluster, name string) string {
 		}
 	}
 	// All values originated in JSON; encoding this reduced representation cannot fail.
-	data, _ := json.Marshal(struct {
-		Destination map[string]string
-		VolumeSpec  any
-		Volume      string
+	data, err := json.Marshal(struct {
+		Destination map[string]string `json:"Destination"`
+		VolumeSpec  any               `json:"VolumeSpec"`
+		Volume      string            `json:"Volume"`
 	}{destination, repository.Volume, volume})
+	if err != nil {
+		return ""
+	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

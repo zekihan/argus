@@ -14,6 +14,28 @@ import (
 	"github.com/zekihan/argus/internal/result"
 )
 
+// failClosedAPI serves the fixtures, forbidding one path.
+func failClosedAPI(t *testing.T, failAt string) *httptest.Server {
+	t.Helper()
+	const secret = "secret-api-body"
+	server := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == failAt {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, secret)
+				return
+			}
+			if r.URL.Path == "/version" {
+				_, _ = io.WriteString(w, `{"gitVersion":"v1.31.0"}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"1"},"items":[]}`)
+		}),
+	)
+	t.Cleanup(server.Close)
+	return server
+}
+
 func TestAPICollectFailsClosed(t *testing.T) {
 	const secret = "secret-api-body"
 	for _, tc := range []struct {
@@ -26,25 +48,16 @@ func TestAPICollectFailsClosed(t *testing.T) {
 		{"longhorn", "/apis/longhorn.io/v1beta2/namespaces/longhorn/nodes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == tc.failAt {
-					w.WriteHeader(http.StatusForbidden)
-					_, _ = io.WriteString(w, secret)
-					return
-				}
-				if r.URL.Path == "/version" {
-					_, _ = io.WriteString(w, `{"gitVersion":"v1.31.0"}`)
-					return
-				}
-				_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"1"},"items":[]}`)
-			}))
-			defer server.Close()
+			server := failClosedAPI(t, tc.failAt)
 			client, err := kube.New(server.URL, "", "", "test", time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = (API{Client: client, Metrics: true, LonghornNamespace: "longhorn"}).Collect(t.Context())
-			if err == nil || kube.CodeOf(err) != kube.CodeForbidden || strings.Contains(err.Error(), secret) {
+			_, err = (API{Client: client, Metrics: true, LonghornNamespace: "longhorn"}).Collect(
+				t.Context(),
+			)
+			if err == nil || kube.CodeOf(err) != kube.CodeForbidden ||
+				strings.Contains(err.Error(), secret) {
 				t.Fatal(err)
 			}
 		})
@@ -54,7 +67,10 @@ func TestAPICollectFailsClosed(t *testing.T) {
 			_, _ = io.WriteString(w, `{"gitVersion":"v1.31.0"}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"name":"worker"}}]}`)
+		_, _ = io.WriteString(
+			w,
+			`{"metadata":{"resourceVersion":"1"},"items":[{"metadata":{"name":"worker"}}]}`,
+		)
 	}))
 	defer server.Close()
 	client, err := kube.New(server.URL, "", "", "test", time.Second)
@@ -62,7 +78,9 @@ func TestAPICollectFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	sample, err := (API{Client: client}).Collect(t.Context())
-	if err != nil || sample.ServerVersion != "v1.31.0" || len(sample.Nodes) != 1 || sample.Metrics != nil || sample.Longhorn != nil {
+	if err != nil || sample.ServerVersion != "v1.31.0" || len(sample.Nodes) != 1 ||
+		sample.Metrics != nil ||
+		sample.Longhorn != nil {
 		t.Fatal(sample, err)
 	}
 }
@@ -77,7 +95,13 @@ func TestNodeDecisionsFailClosed(t *testing.T) {
 	if got := usage("1", "2", false, 90, "cpu", map[string]any{}); got != "metrics_missing" {
 		t.Fatal(got)
 	}
-	s = healthy(t)
+	assertDiskDecisions(t, check)
+}
+
+// assertDiskDecisions verifies longhorn disk sub-decisions.
+func assertDiskDecisions(t *testing.T, check *Check) {
+	t.Helper()
+	s := healthy(t)
 	s.Longhorn[0].Status.Conditions = nil
 	if got := evaluate(t, check, s, now, "agent")["longhorn_disk"]; got != "node_not_ready" {
 		t.Fatal(got)
@@ -101,15 +125,22 @@ func TestNodeDecisionsFailClosed(t *testing.T) {
 	if got := evaluate(t, check, s, now, "agent")["longhorn_disk"]; got != "disk_size_unknown(permanent)" {
 		t.Fatal(got)
 	}
+}
 
+func TestNodeCollectionFailures(t *testing.T) {
 	const secret = "secret-api-body"
 	h := checktest.New(New(cfg(), &fakeAPI{err: errors.New(secret)}), now).Refresh(t)
 	if code, e := h.Get(t, Route); code != 503 || e.Results["collection"] != "collection_error" {
 		t.Fatal(e.Results)
 	}
 	h.NoLeak(t, secret)
-	forbidden := checktest.New(New(cfg(), &fakeAPI{err: &kube.Error{Code: kube.CodeForbidden, Status: 403, Path: "/api/v1/nodes"}}), now).Refresh(t)
-	if code, e := forbidden.Get(t, Route+"/agent"); code != 503 || e.Results["collection"] != "forbidden" || e.Results["ready"] != result.Pending {
+	forbidden := checktest.New(New(cfg(), &fakeAPI{err: &kube.Error{Code: kube.CodeForbidden, Status: 403, Path: "/api/v1/nodes"}}), now).
+		Refresh(t)
+	if code, e := forbidden.Get(
+		t,
+		Route+"/agent",
+	); code != 503 || e.Results["collection"] != "forbidden" ||
+		e.Results["ready"] != result.Pending {
 		t.Fatal(e.Results)
 	}
 	fresh := checktest.New(New(cfg(), &fakeAPI{sample: healthy(t)}), now).Refresh(t)

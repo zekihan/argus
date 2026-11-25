@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,12 +13,13 @@ import (
 	"github.com/zekihan/argus/internal/result"
 )
 
-var now = time.Date(2026, 11, 7, 15, 0, 0, 0, time.UTC)
+var now = time.Date(2026, time.November, 7, 15, 0, 0, 0, time.UTC)
 
 const version = "v1.37.2+k3s1"
 
 // Shapes from the live cluster: k3s nodes report no NetworkUnavailable.
 func node(t *testing.T, name string) Node {
+	t.Helper()
 	var n Node
 	body := `{"metadata":{"name":"` + name + `"},"status":{"allocatable":{"cpu":"12","memory":"14279684Ki"},"nodeInfo":{"kubeletVersion":"` + version + `"},
 	"conditions":[{"type":"MemoryPressure","status":"False"},{"type":"DiskPressure","status":"False"},{"type":"PIDPressure","status":"False"},{"type":"Ready","status":"True"}]}}`
@@ -28,23 +30,29 @@ func node(t *testing.T, name string) Node {
 }
 
 func metrics(name, cpu, memory string) NodeMetrics {
-	m := NodeMetrics{Timestamp: now.Add(-30 * time.Second).Format(time.RFC3339), Usage: map[string]string{"cpu": cpu, "memory": memory}}
+	m := NodeMetrics{
+		Timestamp: now.Add(-30 * time.Second).Format(time.RFC3339),
+		Usage:     map[string]string{"cpu": cpu, "memory": memory},
+	}
 	m.Metadata.Name = name
 	return m
 }
 
 func longhornNode(t *testing.T, name string, available int64) LonghornNode {
+	t.Helper()
 	var l LonghornNode
 	body := `{"metadata":{"name":"` + name + `"},"spec":{"disks":{"permanent":{"path":"/var/lib/longhorn"}}},"status":{"conditions":[{"type":"Ready","status":"True"},{"type":"Schedulable","status":"True"}],
 	"diskStatus":{"permanent":{"conditions":[{"type":"Ready","status":"True","message":"Disk /var/lib/longhorn ready"},{"type":"Schedulable","status":"True"}],"storageAvailable":` +
-		jsonInt(available) + `,"storageMaximum":67049664512}}}}`
+		jsonInt(
+			available,
+		) + `,"storageMaximum":67049664512}}}}`
 	if err := json.Unmarshal([]byte(body), &l); err != nil {
 		t.Fatal(err)
 	}
 	return l
 }
 
-func jsonInt(n int64) string { b, _ := json.Marshal(n); return string(b) }
+func jsonInt(n int64) string { return strconv.FormatInt(n, 10) }
 
 type fakeAPI struct {
 	sample Sample
@@ -61,9 +69,16 @@ func cfg() config.Nodes {
 }
 
 func healthy(t *testing.T) Sample {
-	return Sample{Nodes: []Node{node(t, "agent"), node(t, "control")}, ServerVersion: version,
-		Metrics:  []NodeMetrics{metrics("agent", "1500m", "4Gi"), metrics("control", "500m", "2Gi")},
-		Longhorn: []LonghornNode{longhornNode(t, "agent", 46556774400)}}
+	t.Helper()
+	return Sample{
+		Nodes:         []Node{node(t, "agent"), node(t, "control")},
+		ServerVersion: version,
+		Metrics: []NodeMetrics{
+			metrics("agent", "1500m", "4Gi"),
+			metrics("control", "500m", "2Gi"),
+		},
+		Longhorn: []LonghornNode{longhornNode(t, "agent", 46556774400)},
+	}
 }
 
 func evaluate(t *testing.T, check *Check, s Sample, at time.Time, name string) map[string]string {
@@ -83,7 +98,10 @@ func TestHealthyNodesAndControlPlaneWithoutLonghorn(t *testing.T) {
 	}
 	_, agent := h.Get(t, Route+"/agent")
 	_, control := h.Get(t, Route+"/control")
-	if agent.Results["longhorn_disk"] != "ok" || control.Results["longhorn_disk"] != "n/a" || agent.Results["network"] != "n/a" || agent.Values["cpuPercent"].(float64) != 12.5 {
+	cpu, ok := agent.Values["cpuPercent"].(float64)
+	if agent.Results["longhorn_disk"] != "ok" || control.Results["longhorn_disk"] != "n/a" ||
+		agent.Results["network"] != "n/a" ||
+		!ok || cpu != 12.5 {
 		t.Fatal(agent, control)
 	}
 }
@@ -110,7 +128,10 @@ func TestConditionRules(t *testing.T) {
 		}
 	}
 	s := healthy(t)
-	s.Nodes[0].Status.Conditions = append(s.Nodes[0].Status.Conditions, s.Nodes[0].Status.Conditions[0])
+	s.Nodes[0].Status.Conditions = append(
+		s.Nodes[0].Status.Conditions,
+		s.Nodes[0].Status.Conditions[0],
+	)
 	s.Nodes[0].Status.Conditions[4].Type = "NetworkUnavailable"
 	if got := evaluate(t, check, s, now, "agent")["network"]; got != "ok" {
 		t.Fatal(got)
@@ -133,7 +154,11 @@ func TestCordonAndSkewFailOnlyAfterPersisting(t *testing.T) {
 		}
 	}
 	results := evaluate(t, check, s, now.Add(2*time.Hour+time.Minute), "agent")
-	if results["schedulable"] != "cordoned(for 2h1m)" || !strings.HasPrefix(results["kubelet_version"], "skewed(v1.36.9+k3s1, control_plane v1.37.2+k3s1") {
+	if results["schedulable"] != "cordoned(for 2h1m)" ||
+		!strings.HasPrefix(
+			results["kubelet_version"],
+			"skewed(v1.36.9+k3s1, control_plane v1.37.2+k3s1",
+		) {
 		t.Fatal(results)
 	}
 	// Uncordoning clears the first-seen time.
@@ -177,9 +202,11 @@ func TestUsageAndLonghornDisks(t *testing.T) {
 	if got := evaluate(t, New(disabled, nil), s, now, "agent")["cpu"]; got != result.NA {
 		t.Fatal(got)
 	}
-	for timestamp, want := range map[string]string{"": "metrics_invalid", "garbage": "metrics_invalid",
+	for timestamp, want := range map[string]string{
+		"": "metrics_invalid", "garbage": "metrics_invalid",
 		now.Add(10 * time.Minute).Format(time.RFC3339):  "metrics_invalid",
-		now.Add(-10 * time.Minute).Format(time.RFC3339): "metrics_stale(age 10m, max 5m)"} {
+		now.Add(-10 * time.Minute).Format(time.RFC3339): "metrics_stale(age 10m, max 5m)",
+	} {
 		s = healthy(t)
 		s.Metrics[0].Timestamp = timestamp
 		if got := evaluate(t, check, s, now, "agent"); got["cpu"] != want || got["memory"] != want {
@@ -203,12 +230,21 @@ func TestUsageAndLonghornDisks(t *testing.T) {
 func TestLonghornRequiresStatusForEachConfiguredDisk(t *testing.T) {
 	s := healthy(t)
 	l := &s.Longhorn[0]
-	if err := json.Unmarshal([]byte(`{"spec":{"disks":{"permanent":{"path":"/test/permanent"},"added":{"path":"/test/added"}}}}`), l); err != nil {
+	if err := json.Unmarshal(
+		[]byte(
+			`{"spec":{"disks":{"permanent":{"path":"/test/permanent"},"added":{"path":"/test/added"}}}}`,
+		),
+		l,
+	); err != nil {
 		t.Fatal(err)
 	}
 	l.Status.DiskStatus["removed"] = l.Status.DiskStatus["permanent"]
 	h := checktest.New(New(cfg(), &fakeAPI{sample: s}), now).Refresh(t)
-	if code, e := h.Get(t, Route+"/agent"); code != 503 || e.Results["longhorn_disk"] != "disk_status_missing" {
+	if code, e := h.Get(
+		t,
+		Route+"/agent",
+	); code != 503 ||
+		e.Results["longhorn_disk"] != "disk_status_missing" {
 		t.Fatalf("node with unreported disk: HTTP %d, results %v", code, e.Results)
 	}
 	if code, e := h.Get(t, Route); code != 503 || e.Results["longhorn_disk"] != "1 failing: agent" {
@@ -232,7 +268,10 @@ func TestInventory(t *testing.T) {
 	if code, e := h.Get(t, Route+"/control"); code != 503 || e.Results["ready"] != "missing" {
 		t.Fatal(e)
 	}
-	if _, e := h.Get(t, Route); e.Results["inventory"] != "missing(1): control; unexpected(1): surprise" {
+	if _, e := h.Get(
+		t,
+		Route,
+	); e.Results["inventory"] != "missing(1): control; unexpected(1): surprise" {
 		t.Fatal(e.Results)
 	}
 }

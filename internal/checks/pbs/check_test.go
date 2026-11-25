@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zekihan/go-commons/metrics"
+
 	"github.com/zekihan/argus/internal/config"
 	"github.com/zekihan/argus/internal/result"
-	"github.com/zekihan/go-commons/metrics"
 )
 
 func group(store, kind, id string, last time.Time, guest string) Group {
@@ -19,7 +20,13 @@ func group(store, kind, id string, last time.Time, guest string) Group {
 	return g
 }
 
-func eval(t *testing.T, cfg config.PBS, groups []Group, now time.Time, reg *metrics.Registry) result.Collection {
+func eval(
+	t *testing.T,
+	cfg config.PBS,
+	groups []Group,
+	now time.Time,
+	reg *metrics.Registry,
+) result.Collection {
 	t.Helper()
 	collections := New(cfg, nil, reg).Evaluate(groups, now)
 	if len(collections) != 1 || collections[0].Route != Route {
@@ -38,12 +45,12 @@ func item(t *testing.T, c result.Collection, target string) result.Item {
 }
 
 func TestFreshnessEdges(t *testing.T) {
-	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
-	max := 26 * time.Hour
-	last := now.Add(-max)
-	cfg := config.PBS{MaxAgeSeconds: int(max / time.Second)}
+	now := time.Date(2026, time.November, 23, 12, 0, 0, 0, time.UTC)
+	maxAgeWindow := 26 * time.Hour
+	last := now.Add(-maxAgeWindow)
+	cfg := config.PBS{MaxAgeSeconds: int(maxAgeWindow / time.Second)}
 	reg := metrics.New()
-	secret := "argus@pbs!token:super-secret-value"
+	secret := "argus@pbs!token:super-secret-value" //nolint:gosec // Synthetic test credential, never leaves the fixture.
 	collection := eval(t, cfg, []Group{
 		group("truenas", "vm", "100", last, "web"),
 		group("truenas", "vm", "101", last.Add(-time.Second), ""),
@@ -51,13 +58,24 @@ func TestFreshnessEdges(t *testing.T) {
 		group("truenas", "ct", "200", time.Time{}, secret),
 		group("truenas", "host", "pve-1", last, "not a name"),
 	}, now, reg)
-	if got := item(t, collection, "truenas/vm/100"); got.Results["freshness"] != result.OK || got.Values["guest"] != "web" {
+	if got := item(
+		t,
+		collection,
+		"truenas/vm/100",
+	); got.Results["freshness"] != result.OK ||
+		got.Values["guest"] != "web" {
 		t.Fatalf("exact max age = %+v", got)
 	}
-	if got := item(t, collection, "truenas/vm/101").Results["freshness"]; !strings.HasPrefix(got, "backup_stale(") {
+	if got := item(t, collection, "truenas/vm/101").Results["freshness"]; !strings.HasPrefix(
+		got,
+		"backup_stale(",
+	) {
 		t.Fatalf("just over max = %s", got)
 	}
-	if got := item(t, collection, "truenas/vm/102").Results["freshness"]; !strings.HasPrefix(got, "backup_in_future(") {
+	if got := item(t, collection, "truenas/vm/102").Results["freshness"]; !strings.HasPrefix(
+		got,
+		"backup_in_future(",
+	) {
 		t.Fatalf("future = %s", got)
 	}
 	noBackup := item(t, collection, "truenas/ct/200")
@@ -70,15 +88,24 @@ func TestFreshnessEdges(t *testing.T) {
 	var buf bytes.Buffer
 	reg.WritePrometheus(&buf)
 	text := buf.String()
-	if !strings.Contains(text, `argus_pbs_last_backup_timestamp_seconds{backup_id="100",backup_type="vm",datastore="truenas"}`) || strings.Contains(text, "super-secret") || strings.Contains(text, `backup_id="200"`) {
+	if !strings.Contains(
+		text,
+		`argus_pbs_last_backup_timestamp_seconds{backup_id="100",backup_type="vm",datastore="truenas"}`,
+	) ||
+		strings.Contains(text, "super-secret") ||
+		strings.Contains(text, `backup_id="200"`) {
 		t.Fatalf("metrics = %s", text)
 	}
 }
 
 func TestExpectedExcludeAndDuplicates(t *testing.T) {
-	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, time.November, 23, 12, 0, 0, 0, time.UTC)
 	last := now.Add(-time.Hour)
-	cfg := config.PBS{MaxAgeSeconds: 93600, Expected: []string{"truenas/vm/100", "truenas/vm/404"}, Exclude: []string{"truenas/ct/9"}}
+	cfg := config.PBS{
+		MaxAgeSeconds: 93600,
+		Expected:      []string{"truenas/vm/100", "truenas/vm/404"},
+		Exclude:       []string{"truenas/ct/9"},
+	}
 	reg := metrics.New()
 	collection := eval(t, cfg, []Group{
 		group("truenas", "vm", "100", last, ""),
@@ -100,17 +127,24 @@ func TestExpectedExcludeAndDuplicates(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	reg.WritePrometheus(&buf)
-	if strings.Contains(buf.String(), `backup_id="9"`) || strings.Contains(buf.String(), "retired") {
+	if strings.Contains(buf.String(), `backup_id="9"`) ||
+		strings.Contains(buf.String(), "retired") {
 		t.Fatalf("excluded group was exported: %s", buf.String())
 	}
-	open := eval(t, config.PBS{MaxAgeSeconds: 93600}, []Group{group("truenas", "vm", "7", last, "")}, now, nil)
+	open := eval(
+		t,
+		config.PBS{MaxAgeSeconds: 93600},
+		[]Group{group("truenas", "vm", "7", last, "")},
+		now,
+		nil,
+	)
 	if open.Results["inventory"] != result.OK {
 		t.Fatalf("discovered group without an expected list = %s", open.Results["inventory"])
 	}
 }
 
 func TestMaxAgeOverride(t *testing.T) {
-	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, time.November, 23, 12, 0, 0, 0, time.UTC)
 	weekly := 8*24*time.Hour + 2*time.Hour
 	cfg := config.PBS{
 		MaxAgeSeconds: 26 * 3600,
@@ -130,7 +164,10 @@ func TestMaxAgeOverride(t *testing.T) {
 	if got := item(t, collection, "truenas/vm/40101").Results["freshness"]; got != result.OK {
 		t.Fatalf("weekly limit = %s", got)
 	}
-	if got := item(t, collection, "truenas/vm/40102").Results["freshness"]; !strings.HasPrefix(got, "backup_stale(") {
+	if got := item(t, collection, "truenas/vm/40102").Results["freshness"]; !strings.HasPrefix(
+		got,
+		"backup_stale(",
+	) {
 		t.Fatalf("past weekly limit = %s", got)
 	}
 	if got := item(t, collection, "truenas/vm/40205").Results["freshness"]; got != result.OK {
@@ -139,7 +176,10 @@ func TestMaxAgeOverride(t *testing.T) {
 	if got := item(t, collection, "truenas/vm/104").Results["freshness"]; got != result.OK {
 		t.Fatalf("nightly limit = %s", got)
 	}
-	if got := item(t, collection, "truenas/vm/105").Results["freshness"]; !strings.HasPrefix(got, "backup_stale(") {
+	if got := item(t, collection, "truenas/vm/105").Results["freshness"]; !strings.HasPrefix(
+		got,
+		"backup_stale(",
+	) {
 		t.Fatalf("past nightly limit = %s", got)
 	}
 	if got := item(t, collection, "truenas/ct/116").Results["freshness"]; got != result.OK {

@@ -13,7 +13,7 @@ const pgbackrestSection = `"pgbackrest":{"clusters":[{"namespace":"db","name":"d
 func load(t *testing.T, data string) (Config, error) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return Load(path)
@@ -22,16 +22,19 @@ func load(t *testing.T, data string) (Config, error) {
 func TestStrictConfiguration(t *testing.T) {
 	valid := `{"checks":{` + pgbackrestSection + `}}`
 	c, err := load(t, valid)
-	if err != nil || c.Checks.PGBackRest.MaxAgeSeconds != 28800 || c.Checks.PGBackRest.Clusters[0].Repos["repo2"].MaxAgeSeconds != 36000 {
+	if err != nil || c.Checks.PGBackRest.MaxAgeSeconds != 28800 ||
+		c.Checks.PGBackRest.Clusters[0].Repos["repo2"].MaxAgeSeconds != 36000 {
 		t.Fatal(c, err)
 	}
-	for _, data := range []string{`{"checks":{"pgbackrest":{}}}`, `{"checks":{"pgbackrest":{"clusters":[]}}}`, `{"checks":{"pgbackrest":{"clusters":null}}}`,
+	for _, data := range []string{
+		`{"checks":{"pgbackrest":{}}}`, `{"checks":{"pgbackrest":{"clusters":[]}}}`, `{"checks":{"pgbackrest":{"clusters":null}}}`,
 		`{"unknown":true}`, `{"checks":{"unknown":{}}}`, `{"checks":{},"checks":{}}`, valid + valid,
 		`{"checks":{"pgbackrest":{"clusters":[{"namespace":"db","name":"db","repos":{"repo1":{"maxAgeSeconds":-1}}}]}}}`,
 		`{"checks":{"pgbackrest":{"clusters":[{"namespace":"db/other","name":"db","repos":{"repo1":{}}}]}}}`,
 		`{"checks":{"pgbackrest":{"clusters":[{"namespace":"db","name":"db","repos":{"repo5":{}}}]}}}`,
 		`{"checks":{"pgbackrest":{"clusters":[{"namespace":"db","name":"db","repos":{}}]}}}`,
-		`{"checks":{"pgbackrest":{"unknown":1,"clusters":[{"namespace":"db","name":"db","repos":{"repo1":{}}}]}}}`} {
+		`{"checks":{"pgbackrest":{"unknown":1,"clusters":[{"namespace":"db","name":"db","repos":{"repo1":{}}}]}}}`,
+	} {
 		if _, err := load(t, data); err == nil {
 			t.Fatal("invalid config accepted", data)
 		}
@@ -68,18 +71,32 @@ func TestStrictConfiguration(t *testing.T) {
 }
 
 func TestConfigurationAllowsTimingBudgetBelowSampleAge(t *testing.T) {
-	c, err := Parse([]byte(`{"pollIntervalSeconds":89,"collectionTimeoutSeconds":45,"requestTimeoutSeconds":10,"maxSampleAgeSeconds":180,"checks":{` + pgbackrestSection + `}}`))
+	c, err := Parse(
+		[]byte(
+			`{"pollIntervalSeconds":89,"collectionTimeoutSeconds":45,"requestTimeoutSeconds":10,"maxSampleAgeSeconds":180,"checks":{` + pgbackrestSection + `}}`,
+		),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if interval, timeout, maxAge := c.Timing(c.Checks.PGBackRest.Schedule); interval != 89 || timeout != 45 || maxAge != 180 {
+	if interval, timeout, maxAge := c.Timing(
+		c.Checks.PGBackRest.Schedule,
+	); interval != 89 || timeout != 45 ||
+		maxAge != 180 {
 		t.Fatal(interval, timeout, maxAge)
 	}
-	c, err = Parse([]byte(`{"checks":{"pgbackrest":{"intervalSeconds":600,"maxSampleAgeSeconds":900,"clusters":[{"namespace":"db","name":"db","repos":{"repo1":{}}}]}}}`))
+	c, err = Parse(
+		[]byte(
+			`{"checks":{"pgbackrest":{"intervalSeconds":600,"maxSampleAgeSeconds":900,"clusters":[{"namespace":"db","name":"db","repos":{"repo1":{}}}]}}}`,
+		),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if interval, _, maxAge := c.Timing(c.Checks.PGBackRest.Schedule); interval != 600 || maxAge != 900 {
+	if interval, _, maxAge := c.Timing(
+		c.Checks.PGBackRest.Schedule,
+	); interval != 600 ||
+		maxAge != 900 {
 		t.Fatal(interval, maxAge)
 	}
 }
@@ -107,6 +124,24 @@ func TestConfigurationRejectsCaseInsensitiveDuplicates(t *testing.T) {
 
 // Every field added after a chart release must be optional: the minimal
 // sections below are what an early chart renders and must keep loading.
+// assertMinimalDefaults verifies the default values of a full config.
+func assertMinimalDefaults(t *testing.T, c Config) {
+	t.Helper()
+	k := c.Checks
+	if len(c.Enabled()) != 10 || k.Hosts.User != "argus" || k.Hosts.Concurrency != 8 ||
+		k.Nodes.PersistSeconds != 7200 ||
+		!k.Nodes.MetricsEnabled() ||
+		k.Longhorn.BackupGroup != "backup" ||
+		k.CronJobs.Items[0].MaxRunSeconds != 3600 ||
+		k.Certificates.ExpiryDays != 14 ||
+		k.PKI.MarginDays != 90 ||
+		k.PKI.RootName != "selfsigned-ca" ||
+		k.ExternalSecrets.RefreshGraceSeconds != 600 ||
+		k.ArgoCD.ManualOutOfSyncSeconds != 604800 {
+		t.Fatalf("%+v", k)
+	}
+}
+
 func TestMinimalSectionsLoadWithDefaults(t *testing.T) {
 	c, err := Parse([]byte(`{"checks":{
 	"hosts":{"privateKeyFile":"/ssh/key","knownHostsFile":"/config/known_hosts","hosts":[{"name":"bastion","address":"192.0.2.1"},{"name":"nut","address":"nut.example.internal:2222","expects":["ups"]}]},
@@ -122,12 +157,7 @@ func TestMinimalSectionsLoadWithDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k := c.Checks
-	if len(c.Enabled()) != 10 || k.Hosts.User != "argus" || k.Hosts.Concurrency != 8 || k.Nodes.PersistSeconds != 7200 || !k.Nodes.MetricsEnabled() ||
-		k.Longhorn.BackupGroup != "backup" || k.CronJobs.Items[0].MaxRunSeconds != 3600 || k.Certificates.ExpiryDays != 14 ||
-		k.PKI.MarginDays != 90 || k.PKI.RootName != "selfsigned-ca" || k.ExternalSecrets.RefreshGraceSeconds != 600 || k.ArgoCD.ManualOutOfSyncSeconds != 604800 {
-		t.Fatalf("%+v", k)
-	}
+	assertMinimalDefaults(t, c)
 	if address, err := HostAddress("192.0.2.1"); err != nil || address != "192.0.2.1:22" {
 		t.Fatal(address, err)
 	}
@@ -138,7 +168,7 @@ func TestMinimalSectionsLoadWithDefaults(t *testing.T) {
 }
 
 func TestSectionValidation(t *testing.T) {
-	for name, section := range map[string]string{
+	for name, section := range map[string]string{ //nolint:gosec // Test fixture JSON, no real credentials.
 		"host name":           `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"Bad Name","address":"192.0.2.1"}]}`,
 		"host duplicate":      `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1"},{"name":"a","address":"192.0.2.2"}]}`,
 		"host expects":        `"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":[{"name":"a","address":"192.0.2.1","expects":["ssh"]}]}`,
@@ -181,11 +211,22 @@ func TestSectionValidation(t *testing.T) {
 }
 
 func TestPBSDefaultsAndColonFingerprint(t *testing.T) {
-	c, err := Parse([]byte(`{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/var/run/argus-pbs/token","fingerprint":"AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"}}}`))
+	c, err := Parse(
+		[]byte(
+			`{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/var/run/argus-pbs/token","fingerprint":"AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"}}}`,
+		),
+	)
 	if err != nil || c.Checks.PBS.MaxAgeSeconds != 26*3600 {
 		t.Fatal(err, c.Checks.PBS)
 	}
-	c, err = Parse([]byte(`{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat("ab", 32) + `","maxAgeOverrides":[{"match":"truenas/vm/401*","maxAgeSeconds":698400},{"match":"truenas/vm/402*","maxAgeSeconds":698400}]}}}`))
+	c, err = Parse(
+		[]byte(
+			`{"checks":{"pbs":{"url":"https://192.0.2.63:8007","tokenFile":"/token","fingerprint":"` + strings.Repeat(
+				"ab",
+				32,
+			) + `","maxAgeOverrides":[{"match":"truenas/vm/401*","maxAgeSeconds":698400},{"match":"truenas/vm/402*","maxAgeSeconds":698400}]}}}`,
+		),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,11 +239,25 @@ func TestPBSDefaultsAndColonFingerprint(t *testing.T) {
 }
 
 func TestPBSGlobOverlapAgreesWithMatch(t *testing.T) {
-	patterns := []string{"a", "b", "*", "?", "a*", "*b", "a?", "?b", "ab", "401*", "402*", "40*", "??"}
+	patterns := []string{
+		"a",
+		"b",
+		"*",
+		"?",
+		"a*",
+		"*b",
+		"a?",
+		"?b",
+		"ab",
+		"401*",
+		"402*",
+		"40*",
+		"??",
+	}
 	strings := []string{""}
 	cur := []string{""}
 	for len(cur[0]) < 4 {
-		var next []string
+		next := make([]string, 0, 6*len(cur))
 		for _, s := range cur {
 			for _, c := range []string{"a", "b", "0", "1", "2", "4"} {
 				next = append(next, s+c)
@@ -224,14 +279,24 @@ func TestPBSGlobOverlapAgreesWithMatch(t *testing.T) {
 	for _, left := range patterns {
 		for _, right := range patterns {
 			if segmentGlobsOverlap(left, right) != overlaps(left, right) {
-				t.Fatalf("%s vs %s: detector %v, samples %v", left, right, segmentGlobsOverlap(left, right), overlaps(left, right))
+				t.Fatalf(
+					"%s vs %s: detector %v, samples %v",
+					left,
+					right,
+					segmentGlobsOverlap(left, right),
+					overlaps(left, right),
+				)
 			}
 		}
 	}
 }
 
 func TestDoHValidConfigLoads(t *testing.T) {
-	c, err := Parse([]byte(`{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"one.one.one.one.","expectedIPv4":"1.1.1.1","dnsResolver":"[2606:4700:4700::1111]:53"}}}`))
+	c, err := Parse(
+		[]byte(
+			`{"checks":{"doh":{"url":"https://dns.example.com/dns-query","name":"one.one.one.one.","expectedIPv4":"1.1.1.1","dnsResolver":"[2606:4700:4700::1111]:53"}}}`,
+		),
+	)
 	if err != nil || c.Checks.DoH == nil || len(c.Enabled()) != 1 {
 		t.Fatal("valid doh section rejected", err)
 	}
@@ -240,10 +305,18 @@ func TestDoHValidConfigLoads(t *testing.T) {
 func TestHostProbesMustFitTheCollectionTimeout(t *testing.T) {
 	hosts := `[{"name":"a","address":"192.0.2.1"},{"name":"b","address":"192.0.2.2"},{"name":"c","address":"192.0.2.3"}]`
 	base := `{"checks":{"hosts":{"privateKeyFile":"/k","knownHostsFile":"/h","hosts":` + hosts
-	if _, err := Parse([]byte(base + `,"concurrency":2,"timeoutSeconds":20,"collectionTimeoutSeconds":40,"maxSampleAgeSeconds":300}}}`)); err != nil {
+	if _, err := Parse(
+		[]byte(
+			base + `,"concurrency":2,"timeoutSeconds":20,"collectionTimeoutSeconds":40,"maxSampleAgeSeconds":300}}}`,
+		),
+	); err != nil {
 		t.Fatal("two batches of 20s fit 40s", err)
 	}
-	if _, err := Parse([]byte(base + `,"concurrency":2,"timeoutSeconds":21,"collectionTimeoutSeconds":40,"maxSampleAgeSeconds":300}}}`)); err == nil {
+	if _, err := Parse(
+		[]byte(
+			base + `,"concurrency":2,"timeoutSeconds":21,"collectionTimeoutSeconds":40,"maxSampleAgeSeconds":300}}}`,
+		),
+	); err == nil {
 		t.Fatal("two batches of 21s accepted within 40s")
 	}
 }
@@ -251,10 +324,13 @@ func TestHostProbesMustFitTheCollectionTimeout(t *testing.T) {
 // Startup errors are logged, so they carry fixed descriptions rather than
 // operating-system or decoder text.
 func TestStartupErrorsUseFixedDescriptions(t *testing.T) {
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.json")); err == nil || err.Error() != "open configuration: file does not exist" {
+	if _, err := Load(
+		filepath.Join(t.TempDir(), "missing.json"),
+	); err == nil ||
+		err.Error() != "open configuration: file does not exist" {
 		t.Fatal(err)
 	}
-	for data, want := range map[string]string{
+	for data, want := range map[string]string{ //nolint:gosec // Test fixture JSON, no real credentials.
 		`{"unknown":1}`:                     `decode configuration: unknown field "unknown"`,
 		`{"pollIntervalSeconds":"60"}`:      `decode configuration: field "pollIntervalSeconds" has the wrong type`,
 		`{"pollIntervalSeconds":60`:         "invalid configuration JSON: syntax error at byte 25",
@@ -312,7 +388,9 @@ func TestMetricsAddressDefaultsDisablesAndValidates(t *testing.T) {
 		"port range": ":99999",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse([]byte(`{"metricsAddress":` + strconv.Quote(address) + `}`)); err == nil {
+			if _, err := Parse(
+				[]byte(`{"metricsAddress":` + strconv.Quote(address) + `}`),
+			); err == nil {
 				t.Fatal("invalid metricsAddress accepted", address)
 			}
 		})

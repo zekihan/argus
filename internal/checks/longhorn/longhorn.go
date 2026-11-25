@@ -19,13 +19,21 @@ import (
 const (
 	VolumesRoute = "longhorn/volumes"
 	SystemRoute  = "longhorn/system"
-	// transitionalFor is how long a volume may stay in a non-steady state.
+	// TransitionalFor is how long a volume may stay in a non-steady state.
 	transitionalFor = 15 * time.Minute
 )
 
 // volume and robustness are backup_monitor.py's per-volume checks; backup is
 // its freshness rule. The rest are new.
-var dimensions = []string{"volume", "backup", "robustness", "state", "replicas", "scheduled", "snapshots"}
+var dimensions = []string{
+	"volume",
+	"backup",
+	"robustness",
+	"state",
+	"replicas",
+	"scheduled",
+	"snapshots",
+}
 
 type Volume struct {
 	Metadata kube.Metadata `json:"metadata"`
@@ -103,10 +111,20 @@ func (a API) Collect(ctx context.Context) (Sample, error) {
 	if s.Replicas, err = kube.List[Replica](ctx, a.Client, path+"/replicas", ""); err != nil {
 		return Sample{}, err
 	}
-	if s.BackupTargets, err = kube.List[BackupTarget](ctx, a.Client, path+"/backuptargets", ""); err != nil {
+	if s.BackupTargets, err = kube.List[BackupTarget](
+		ctx,
+		a.Client,
+		path+"/backuptargets",
+		"",
+	); err != nil {
 		return Sample{}, err
 	}
-	if s.SystemBackups, err = kube.List[SystemBackup](ctx, a.Client, path+"/systembackups", ""); err != nil {
+	if s.SystemBackups, err = kube.List[SystemBackup](
+		ctx,
+		a.Client,
+		path+"/systembackups",
+		"",
+	); err != nil {
 		return Sample{}, err
 	}
 	return s, nil
@@ -124,14 +142,12 @@ func New(c config.Longhorn, api Collector) *Check {
 
 func (c *Check) Name() string { return "longhorn" }
 
-func (c *Check) expected() []string {
-	expected := append([]string(nil), c.config.ExpectedPVCs...)
-	sort.Strings(expected)
-	return expected
-}
-
 func (c *Check) Describe() []result.Collection {
-	volumes := result.Collection{Route: VolumesRoute, Check: "longhorn/volume", Dimensions: dimensions}
+	volumes := result.Collection{
+		Route:      VolumesRoute,
+		Check:      "longhorn/volume",
+		Dimensions: dimensions,
+	}
 	for _, key := range c.expected() {
 		volumes.Items = append(volumes.Items, result.Item{Target: key})
 	}
@@ -146,31 +162,6 @@ func (c *Check) Collect(ctx context.Context, clock func() time.Time) ([]result.C
 	// Evaluate after reading: objects updated during the read are not "future".
 	now := clock()
 	return c.Evaluate(sample, now), nil
-}
-
-// BackupResult is backup_monitor.py's backup_problem.
-func BackupResult(v Volume, now time.Time, maximum int) (string, map[string]any) {
-	values := map[string]any{}
-	if v.Status.LastBackupAt == nil || *v.Status.LastBackupAt == "" {
-		created, err := kube.ParseTime(v.Metadata.CreationTimestamp)
-		if err != nil {
-			return result.Reason("no_backup"), values
-		}
-		return result.Reason("no_backup", result.Labeled("created", result.Dur(now.Sub(created).Seconds()))), values
-	}
-	last, err := kube.ParseTime(*v.Status.LastBackupAt)
-	if err != nil {
-		return result.Reason("backup_timestamp_invalid"), values
-	}
-	age := now.Sub(last).Seconds()
-	values["lastBackupAt"], values["lastBackupAgeSeconds"] = last.Format(time.RFC3339), age
-	switch {
-	case age < 0:
-		return result.Reason("backup_in_future", result.Dur(age)), values
-	case age > float64(maximum):
-		return result.Reason("backup_stale", result.Labeled("last", result.Dur(age)), result.Labeled("max", result.Dur(float64(maximum)))), values
-	}
-	return result.OK, values
 }
 
 func (c *Check) Evaluate(s Sample, now time.Time) []result.Collection {
@@ -198,7 +189,11 @@ func (c *Check) Evaluate(s Sample, now time.Time) []result.Collection {
 			unexpected = append(unexpected, name)
 		}
 	}
-	volumes := result.Collection{Route: VolumesRoute, Check: "longhorn/volume", Dimensions: dimensions}
+	volumes := result.Collection{
+		Route:      VolumesRoute,
+		Check:      "longhorn/volume",
+		Dimensions: dimensions,
+	}
 	var missing []string
 	for _, key := range c.expected() {
 		matches := mapped[key]
@@ -210,16 +205,66 @@ func (c *Check) Evaluate(s Sample, now time.Time) []result.Collection {
 		case 1:
 			item = c.volume(key, matches[0], s.Replicas, now)
 		default:
-			item.Results = notApplicable(result.Reason("ambiguous", result.Labeled("volumes", result.Int(int64(len(matches))))))
+			item.Results = notApplicable(
+				result.Reason(
+					"ambiguous",
+					result.Labeled("volumes", result.Int(int64(len(matches)))),
+				),
+			)
 		}
 		volumes.Items = append(volumes.Items, item)
 	}
 	inventory := result.Inventory(missing, unexpected)
 	volumes.Results = map[string]string{"inventory": inventory}
-	system := result.Collection{Route: SystemRoute, Check: SystemRoute, Singleton: true, Values: map[string]any{}}
-	system.Results = map[string]string{"inventory": inventory, "backup_targets": targets(s.BackupTargets, system.Values),
-		"system_backup": c.systemBackup(s.SystemBackups, now, system.Values)}
+	system := result.Collection{
+		Route:     SystemRoute,
+		Check:     SystemRoute,
+		Singleton: true,
+		Values:    map[string]any{},
+	}
+	system.Results = map[string]string{
+		"inventory": inventory, "backup_targets": targets(s.BackupTargets, system.Values),
+		"system_backup": c.systemBackup(s.SystemBackups, now, system.Values),
+	}
 	return []result.Collection{volumes, system}
+}
+
+// BackupResult is backup_monitor.py's backup_problem.
+func BackupResult(v Volume, now time.Time, maximum int) (string, map[string]any) {
+	values := map[string]any{}
+	if v.Status.LastBackupAt == nil || *v.Status.LastBackupAt == "" {
+		created, err := kube.ParseTime(v.Metadata.CreationTimestamp)
+		if err != nil {
+			return result.Reason("no_backup"), values
+		}
+		return result.Reason(
+			"no_backup",
+			result.Labeled("created", result.Dur(now.Sub(created).Seconds())),
+		), values
+	}
+	last, err := kube.ParseTime(*v.Status.LastBackupAt)
+	if err != nil {
+		return result.Reason("backup_timestamp_invalid"), values
+	}
+	age := now.Sub(last).Seconds()
+	values["lastBackupAt"], values["lastBackupAgeSeconds"] = last.Format(time.RFC3339), age
+	switch {
+	case age < 0:
+		return result.Reason("backup_in_future", result.Dur(age)), values
+	case age > float64(maximum):
+		return result.Reason(
+			"backup_stale",
+			result.Labeled("last", result.Dur(age)),
+			result.Labeled("max", result.Dur(float64(maximum))),
+		), values
+	}
+	return result.OK, values
+}
+
+func (c *Check) expected() []string {
+	expected := append([]string(nil), c.config.ExpectedPVCs...)
+	sort.Strings(expected)
+	return expected
 }
 
 func notApplicable(volume string) map[string]string {
@@ -243,22 +288,40 @@ func conditionResult(conditions []kube.Condition, kind, failWhen, code string) s
 	return result.Reason("unknown")
 }
 
+// robustnessResult maps volume robustness to the robustness dimension result.
+func robustnessResult(v Volume) string {
+	switch robustness := v.Status.Robustness; {
+	case robustness == "healthy":
+		return result.OK
+	case robustness == "degraded" || robustness == "faulted":
+		// Failing whether or not the volume is attached, as backup_monitor.py does.
+		return result.Reason(robustness)
+	case robustness == "unknown" && v.Status.State == "detached":
+		return result.NA
+	default:
+		return result.Reason("unknown")
+	}
+}
+
+// healthyReplicas counts running, non-failed replicas of the volume.
+func healthyReplicas(name string, replicas []Replica) int {
+	healthy := 0
+	for _, r := range replicas {
+		if r.Spec.VolumeName == name && r.Status.CurrentState == "running" &&
+			r.Spec.FailedAt == "" &&
+			r.Spec.HealthyAt != "" {
+			healthy++
+		}
+	}
+	return healthy
+}
+
 func (c *Check) volume(key string, v Volume, replicas []Replica, now time.Time) result.Item {
 	attached := v.Status.State == "attached"
 	results := map[string]string{"volume": result.OK}
 	var values map[string]any
 	results["backup"], values = BackupResult(v, now, c.config.MaxBackupAgeSeconds)
-	switch robustness := v.Status.Robustness; {
-	case robustness == "healthy":
-		results["robustness"] = result.OK
-	case robustness == "degraded" || robustness == "faulted":
-		// Failing whether or not the volume is attached, as backup_monitor.py does.
-		results["robustness"] = result.Reason(robustness)
-	case robustness == "unknown" && v.Status.State == "detached":
-		results["robustness"] = result.NA
-	default:
-		results["robustness"] = result.Reason("unknown")
-	}
+	results["robustness"] = robustnessResult(v)
 	switch state := v.Status.State; state {
 	case "attached", "detached":
 		c.seen.Active(key, false, now)
@@ -267,27 +330,40 @@ func (c *Check) volume(key string, v Volume, replicas []Replica, now time.Time) 
 		since := c.seen.Active(key, true, now)
 		results["state"] = result.OK
 		if since > transitionalFor {
-			results["state"] = result.Reason("stuck", result.Name(state), result.Labeled("for", result.Dur(since.Seconds())))
+			results["state"] = result.Reason(
+				"stuck",
+				result.Name(state),
+				result.Labeled("for", result.Dur(since.Seconds())),
+			)
 		}
 		values["stateObservedSeconds"] = since.Seconds()
 	}
-	healthy := 0
-	for _, r := range replicas {
-		if r.Spec.VolumeName == v.Metadata.Name && r.Status.CurrentState == "running" && r.Spec.FailedAt == "" && r.Spec.HealthyAt != "" {
-			healthy++
-		}
-	}
+	healthy := healthyReplicas(v.Metadata.Name, replicas)
 	desired := v.Spec.NumberOfReplicas
 	results["replicas"] = result.NA
 	if attached {
 		results["replicas"] = result.OK
 		if healthy < desired {
-			results["replicas"] = result.Reason("degraded", result.Labeled("healthy", result.Int(int64(healthy))), result.Labeled("desired", result.Int(int64(desired))))
+			results["replicas"] = result.Reason(
+				"degraded",
+				result.Labeled("healthy", result.Int(int64(healthy))),
+				result.Labeled("desired", result.Int(int64(desired))),
+			)
 		}
 		values["replicasHealthy"] = healthy
 	}
-	results["scheduled"] = conditionResult(v.Status.Conditions, "Scheduled", "False", "not_scheduled")
-	results["snapshots"] = conditionResult(v.Status.Conditions, "TooManySnapshots", "True", "too_many_snapshots")
+	results["scheduled"] = conditionResult(
+		v.Status.Conditions,
+		"Scheduled",
+		"False",
+		"not_scheduled",
+	)
+	results["snapshots"] = conditionResult(
+		v.Status.Conditions,
+		"TooManySnapshots",
+		"True",
+		"too_many_snapshots",
+	)
 	if size, err := strconv.ParseInt(v.Spec.Size, 10, 64); err == nil {
 		values["sizeBytes"] = size
 	}
@@ -353,13 +429,22 @@ func (c *Check) systemBackup(list []SystemBackup, now time.Time, values map[stri
 		return result.Reason("invalid_created_at", invalid...)
 	}
 	age := now.Sub(latestAt).Seconds()
-	values["systemBackup"], values["systemBackupCreatedAt"], values["systemBackupAgeSeconds"] = result.SafeName(latest.Metadata.Name), latestAt.Format(time.RFC3339), age
+	values["systemBackup"], values["systemBackupCreatedAt"], values["systemBackupAgeSeconds"] = result.SafeName(
+		latest.Metadata.Name,
+	), latestAt.Format(
+		time.RFC3339,
+	), age
 	maximum := float64(c.config.SystemBackupMaxAgeSeconds + c.config.SystemBackupGraceSeconds)
 	switch {
 	case latest.Status.State != "Ready":
 		return result.Reason("not_ready", result.Name(latest.Metadata.Name))
 	case age < 0 || age > maximum:
-		return result.Reason("stale_or_invalid", result.Name(latest.Metadata.Name), result.Labeled("age", result.Dur(age)), result.Labeled("max", result.Dur(maximum)))
+		return result.Reason(
+			"stale_or_invalid",
+			result.Name(latest.Metadata.Name),
+			result.Labeled("age", result.Dur(age)),
+			result.Labeled("max", result.Dur(maximum)),
+		)
 	case len(invalid) > 0:
 		return result.Reason("invalid_created_at", invalid...)
 	}
