@@ -163,6 +163,47 @@ func TestGroupsUsesTheTokenAndNeverLogsIt(t *testing.T) {
 	}
 }
 
+func TestNullPBSInventory(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stores string
+	}{
+		{name: "datastores", stores: `{"data":null}`},
+		{name: "groups", stores: `{"data":[{"store":"test"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, leaf, fingerprint := testCert(t)
+			srv := serve(t, leaf, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api2/json/admin/datastore":
+					_, _ = ioWrite(w, tc.stores)
+				case "/api2/json/admin/datastore/test/groups":
+					_, _ = ioWrite(w, `{"data":null}`)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			cfg := config.PBS{
+				URL:         srv.URL,
+				TokenFile:   tokenFile(t, tokenValue),
+				Fingerprint: fingerprint,
+			}
+			api, err := NewAPI(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			collections, err := New(cfg, api, nil).Collect(t.Context(), time.Now)
+			if code := runner.Code(err); code != "decode" || len(collections) != 0 {
+				t.Fatalf(
+					"expected decode and no collections, got code %q and %+v",
+					code,
+					collections,
+				)
+			}
+		})
+	}
+}
+
 func TestRejectedResponsesDoNotEchoTheToken(t *testing.T) {
 	_, leaf, fingerprint := testCert(t)
 	logs := captureLogs(t)

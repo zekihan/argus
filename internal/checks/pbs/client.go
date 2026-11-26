@@ -247,7 +247,8 @@ func (a *API) get(ctx context.Context, token, path string, dest any) error {
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Data) == 0 {
+	if err := json.Unmarshal(body, &envelope); err != nil ||
+		len(envelope.Data) == 0 || envelope.Data[0] != '[' {
 		return runner.Fail("decode")
 	}
 	if err := json.Unmarshal(envelope.Data, dest); err != nil {
