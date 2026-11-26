@@ -217,6 +217,7 @@ func sessionOutcome(
 				stdout.buf.Bytes()...), stdout.truncated
 			return time.Since(runStart)
 		}
+		outcome.SSH = result.Reason("session_failed")
 		return 0
 	}
 	err = session.Wait()
