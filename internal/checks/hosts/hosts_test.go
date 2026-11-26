@@ -47,12 +47,13 @@ func probeJSON(t *testing.T, values map[string]string) []byte {
 }
 
 type behavior struct {
-	stdout  []byte
-	stderr  string
-	exit    uint32
-	hang    bool
-	stallAt string
-	onStall func()
+	stdout   []byte
+	stderr   string
+	exit     uint32
+	hang     bool
+	stallAt  string
+	onStall  func()
+	rejectAt string
 }
 
 type server struct {
@@ -99,6 +100,10 @@ func (s *server) handleChannel(channel ssh.Channel, reqs <-chan *ssh.Request, b 
 			b.onStall()
 			continue
 		}
+		if b.rejectAt == req.Type {
+			_ = req.Reply(false, nil)
+			continue
+		}
 		_ = req.Reply(true, nil)
 		if b.hang {
 			<-time.After(2 * time.Second)
@@ -120,6 +125,10 @@ func (s *server) serveConn(conn net.Conn, cfg *ssh.ServerConfig, b behavior) {
 	}
 	go ssh.DiscardRequests(requests)
 	for newChannel := range channels {
+		if b.rejectAt == newChannel.ChannelType() {
+			_ = newChannel.Reject(ssh.Prohibited, "channel refused")
+			continue
+		}
 		if b.stallAt == "session" {
 			b.onStall()
 			continue
